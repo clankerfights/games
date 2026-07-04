@@ -37,10 +37,22 @@ export function writeFailures(runDir, failures) {
 export function aggregateWorkerTests(workers) {
   const cases = [];
   const caseSources = [];
-  const parseFailures = [];
+  const invalidLines = [];
+  const readFailures = [];
   for (const worker of workers) {
     if (!existsSync(worker.testsPath)) continue;
-    const lines = readFileSync(worker.testsPath, "utf8")
+    let text;
+    try {
+      text = readFileSync(worker.testsPath, "utf8");
+    } catch (error) {
+      readFailures.push({
+        worker: worker.name,
+        path: worker.testsPath,
+        error: error.message,
+      });
+      continue;
+    }
+    const lines = text
       .split(/\r?\n/)
       .filter((line) => line.trim() !== "");
     for (const [index, line] of lines.entries()) {
@@ -49,36 +61,38 @@ export function aggregateWorkerTests(workers) {
         cases.push(entry);
         caseSources.push({ worker: worker.name, line: index + 1, entry });
       } catch (error) {
-        parseFailures.push({
+        const invalidEntry = {
+          raw: line,
           worker: worker.name,
           line: index + 1,
-          error: error.message,
-          raw: line,
-        });
+          format: "invalid",
+        };
+        cases.push(invalidEntry);
+        invalidLines.push({ ...invalidEntry, error: error.message });
       }
     }
   }
-  return { cases, caseSources, parseFailures };
+  return { cases, caseSources, invalidLines, readFailures };
 }
 
 export function writeReports({ runDir, expectation, workers, failures, result }) {
-  const { cases, caseSources, parseFailures } = aggregateWorkerTests(workers);
+  const { cases, caseSources, invalidLines, readFailures } = aggregateWorkerTests(workers);
   writeJson(path.join(runDir, "reports", "test-cases.json"), cases);
   const allFailures = [...failures];
-  for (const parseFailure of parseFailures) {
+  for (const readFailure of readFailures) {
     allFailures.push({
       code: "QA_TEST_LEDGER_INVALID",
       severity: "medium",
-      message: `Invalid tests.jsonl entry from ${parseFailure.worker} line ${parseFailure.line}`,
-      evidence: parseFailure,
-      fixHint: "Write one valid JSON object per tests.jsonl line.",
+      message: `Unreadable tests.jsonl from ${readFailure.worker}`,
+      evidence: readFailure,
+      fixHint: "Ensure the worker test ledger exists and is readable by the runner.",
     });
   }
   allFailures.push(...collectWorkerReportedFailures(caseSources));
   writeFailures(runDir, allFailures);
   writeFileSync(
     path.join(runDir, "reports", "summary.md"),
-    renderSummary({ expectation, cases, failures: allFailures, result }),
+    renderSummary({ expectation, cases, invalidLines, failures: allFailures, result }),
   );
   return { cases, failures: allFailures };
 }
@@ -145,7 +159,7 @@ export function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function renderSummary({ expectation, cases, failures, result }) {
+function renderSummary({ expectation, cases, invalidLines, failures, result }) {
   const lines = [];
   lines.push("# QA Chaos Summary");
   lines.push("");
@@ -159,10 +173,26 @@ function renderSummary({ expectation, cases, failures, result }) {
     lines.push("- No worker test cases were recorded.");
   } else {
     for (const testCase of cases) {
+      if (testCase?.format === "invalid") {
+        lines.push(
+          `- invalid tests.jsonl line from ${testCase.worker} line ${testCase.line}: ignored for gate`,
+        );
+        continue;
+      }
       const id = testCase.id ?? "(no id)";
       const status = testCase.status ?? "(no status)";
       const risk = testCase.risk ?? "(no risk)";
       lines.push(`- ${id}: ${status} - ${risk}`);
+    }
+  }
+  if (invalidLines.length > 0) {
+    lines.push("");
+    lines.push("## WARN");
+    lines.push("");
+    for (const invalidLine of invalidLines) {
+      lines.push(
+        `- Preserved invalid tests.jsonl line from ${invalidLine.worker} line ${invalidLine.line}; ignored for gate.`,
+      );
     }
   }
   lines.push("");

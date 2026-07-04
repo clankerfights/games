@@ -113,13 +113,13 @@ export function prepareWorkerArtifacts({ worker, workerDir, prompt, workerConfig
   writeFileSync(path.join(workerDir, "console.jsonl"), "");
   writeFileSync(path.join(workerDir, "network.jsonl"), "");
   writeFileSync(path.join(workerDir, "transcript.md"), "");
+  copyFileSync(ACT_HELPER_TEMPLATE_PATH, path.join(workerDir, "act.mjs"));
   if (worker.kind === "rest") {
     writeFileSync(
       path.join(workerDir, "worker-config.json"),
       JSON.stringify(workerConfigForArtifact({ worker, workerConfig }), null, 2),
     );
     copyFileSync(POLL_LOOP_TEMPLATE_PATH, path.join(workerDir, "poll-loop.mjs"));
-    copyFileSync(ACT_HELPER_TEMPLATE_PATH, path.join(workerDir, "act.mjs"));
   }
   return {
     ...worker,

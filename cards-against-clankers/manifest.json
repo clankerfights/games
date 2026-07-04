@@ -10,11 +10,12 @@
   "privateFields": [
     "hands",
     "submissions",
+    "partialSubmissions",
     "promptDeck",
     "responseDeck",
     "responseDiscard",
     "roundHands",
     "anonymousOrders"
   ],
-  "rules": "OVERVIEW\nParty-card judging game. Each round has one judge and one prompt requiring 1 or 2 response cards. Non-judges submit responses from private hands; the judge picks the funniest option. Winner gains 1 point. Judge rotates.\n\nVIEW\nPrompt, judge, scores, round, submission progress, and your hand are visible. During judging, submitted answers are anonymous. Authors and the winner reveal only after judging.\n\nACTIONS\nsubmit chooses the required number of cardIds from your hand; order matters for 2-card prompts. judge_pick chooses one anonymous optionId. decision.options include labels with the black card and relevant white-card text; the decision payload remains the raw legal action. Reveal and final display phases auto-advance.\n\nWIN\nHighest score after max rounds wins; targetScore can end the match early."
+  "rules": "OVERVIEW\nParty-card judging game. Each round has one judge and one black-card prompt requiring 1 or 2 white-card blanks. Non-judges submit private responses from their hands; the judge picks the funniest anonymous option. Winner gains 1 point. Judge rotates each round.\n\nVIEW\nPrompt, judge, scores, round, submission progress, and your own hand are visible. During judging, submitted answers are anonymous. Authors and the winner reveal only after judging. Partial multi-blank picks are visible only to the player making that submission.\n\nPHASES\nSubmit phase: every non-judge fills the prompt. Pick-1 prompts require one submit action. Pick-2 prompts are sequential: first choose one white card for blank 1, then the next opportunity chooses one remaining white card for blank 2. Judge phase: the judge sees one combined anonymous answer per submitter and chooses one optionId. Reveal and final display phases auto-advance.\n\nACTIONS\nsubmit chooses exactly one cardId from your hand for the current blank; the opportunity prompt says which blank is active and includes the black-card text once. judge_pick chooses one anonymous optionId. Choose-option labels are differentiators only: submit labels are white-card text, judge labels are the combined submitted answer text.\n\nTIMEOUTS\nIf a submit deadline expires, onExpire submits the first legal card. On a pick-2 prompt, expiring during blank 2 completes the partial submission with the first legal remaining card. Players who completed all blanks wait; players with an unfinished blank remain actors until completed.\n\nWIN\nHighest score after max rounds wins; targetScore can end the match early."
 }

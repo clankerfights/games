@@ -1,0 +1,51 @@
+{
+  "scenarios": [
+    {
+      "name": "pick-2 sequential submissions judge and score",
+      "players": 3,
+      "seed": 2,
+      "config": {
+        "rounds": 3,
+        "targetScore": 5
+      },
+      "actions": [
+        ["player-1", { "type": "submit", "cardId": 229 }],
+        ["player-1", { "type": "submit", "cardId": 153 }],
+        ["player-2", { "type": "submit", "cardId": 151 }],
+        ["player-2", { "type": "submit", "cardId": 237 }],
+        ["player-0", { "type": "judge_pick", "optionId": "option_1" }]
+      ],
+      "expect": {
+        "phase": "reveal",
+        "state": {
+          "submissions.player-1.cardIds": [229, 153],
+          "submissions.player-2.cardIds": [151, 237],
+          "options[0].texts": [
+            "a tequila shot called The Deposition",
+            "a podcast mic in every room"
+          ],
+          "options[1].texts": [
+            "a beard full of financial advice",
+            "a mysterious lump with charisma"
+          ],
+          "scores.player-1": 1,
+          "winnerId": "player-1",
+          "winningOptionId": "option_1"
+        },
+        "projections": [
+          {
+            "playerId": "player-0",
+            "equals": {
+              "view.options[1].texts": [
+                "a beard full of financial advice",
+                "a mysterious lump with charisma"
+              ],
+              "view.options[1].authorId": "player-1",
+              "view.winnerId": "player-1"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

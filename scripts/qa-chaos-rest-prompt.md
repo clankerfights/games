@@ -70,15 +70,15 @@ node ./act.mjs chat "<text>" [channel]
 Use chat only after any required decision submission, and only on channels exposed to you by the latest poll. Never invent `chat.channel` when the contract does not expose it.
 
 5. If an action write returns 409, immediately run `node ./poll-loop.mjs` again and continue from the fresh state unless the poll shows game over, no legal actions for you, privacy leak, or hard failure.
-6. Between poll-loop invocations, write `tests.jsonl` entries for attempted or skipped QA ideas. Never delay an urgent legal action for QA ledger polish.
+6. Between poll-loop invocations, record attempted or blocked QA ideas through `node ./act.mjs test ...`. Never delay an urgent legal action for QA ledger polish.
 7. After each decision, skipped decision, chat, QA note, or game-over observation, run `node ./poll-loop.mjs` again. Stop only when the game is over, the orchestrator kills the process, privacy is violated, or a hard failure prevents legal play.
 
 ## QA Ledger
 
-Maintain `tests.jsonl` in this directory. For each attempted or skipped QA idea, append one JSON object with:
+Record each attempted or blocked QA idea through the helper from this directory. The helper owns `tests.jsonl`; do not edit or append that file by hand.
 
-```json
-{"id":"{{workerName}}-001","worker":"{{workerName}}","risk":"...","setup":"...","steps":["..."],"expected":"...","observed":"...","status":"pass|fail|blocked|skipped","evidence":"...","skippedReason":"..."}
+```text
+node ./act.mjs test --status pass --risk "Turn deadline edge" --steps "Submitted the first legal action after a low remainingMs poll" --expected "The action is accepted once and the room advances" --observed "HTTP 200 response and the next poll advanced" --evidence "writes.jsonl action entry"
 ```
 
 Use an adversarial QA mindset while staying legal. Try odd-but-legal choices, visible boundary cases, recovery paths, and chat behavior when channels invite it. Do not optimize only for winning; make the game prove it survives curious play.

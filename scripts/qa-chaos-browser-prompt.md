@@ -58,14 +58,14 @@ For each UI gesture that submits or attempts to submit a game decision, append o
 {"type":"action","worker":"{{workerName}}","phase":"...","gesture":"...","target":"...","at":"..."}
 ```
 
-Also write observations to `observations.jsonl`, browser gestures to `actions.jsonl`, console errors to `console.jsonl`, network failures to `network.jsonl`, QA cases to `tests.jsonl`, and narrative notes to `transcript.md` under your artifact directory.
+Also write observations to `observations.jsonl`, browser gestures to `actions.jsonl`, console errors to `console.jsonl`, network failures to `network.jsonl`, QA cases through `node ./act.mjs test ...`, and narrative notes to `transcript.md` under your artifact directory.
 
 ## QA Ledger
 
-Maintain `tests.jsonl` in this directory. For each attempted or skipped QA idea, append one JSON object with:
+Record each attempted or blocked QA idea through the helper from this directory. The helper owns `tests.jsonl`; do not edit or append that file by hand.
 
-```json
-{"id":"{{workerName}}-001","worker":"{{workerName}}","risk":"...","setup":"...","steps":["..."],"expected":"...","observed":"...","status":"pass|fail|blocked|skipped","code":"...","evidence":"...","skippedReason":"..."}
+```text
+node ./act.mjs test --status pass --risk "Double-click action guard" --steps "Double-clicked one visible move button before the next render" --expected "Only one decision is submitted" --observed "The UI advanced once and no duplicate action appeared" --evidence "screenshots/double-click-guard.png"
 ```
 
 Use an adversarial QA mindset while staying legal. Try harmless odd-but-legal interactions before or between valid moves when the state is not urgent: hover, click empty visible space, double-click one control and verify only one action lands, resize desktop/mobile, press Escape/Tab/Enter/arrows, edit inputs, and recover to a valid move.

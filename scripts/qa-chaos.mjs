@@ -29,9 +29,12 @@ import {
   WorkerRuntime,
   commandForAdapter,
   formatCommandLine,
+  isWorkerSpawnFailureExit,
   prepareWorkerArtifacts,
   renderWorkerPrompt,
+  resolveCommandSpecForSpawn,
   stopWorkerRuntimes,
+  workerSpawnFailureEvidence,
 } from "./lib/qa-chaos-workers.mjs";
 import {
   countWorkerActionSubmissions,
@@ -277,7 +280,7 @@ function printDryRun(config) {
     console.log(`Run ${runIndex} report path: ${runDir}`);
     for (const worker of config.roster) {
       const workerDir = path.join(runDir, "workers", worker.name);
-      const command = commandForAdapter(worker.adapter, workerDir);
+      const command = resolveCommandSpecForSpawn(commandForAdapter(worker.adapter, workerDir));
       console.log(
         `Worker ${worker.name}/${worker.kind} (${worker.adapter}) command: ${formatCommandLine(command)} < ${path.join(workerDir, "prompt.md")}`,
       );
@@ -454,15 +457,17 @@ async function runOne(config, runIndex) {
     });
     runJson.outcome = result;
   } catch (error) {
-    const failure = makeFailure(
-      error.name === "QaChaosHttpError" && !reachedHost
-        ? "HOST_UNREACHABLE"
-        : "ROOM_LIFECYCLE_FAILED",
-      "high",
-      error.message,
-      error.details ?? { roomCode },
-      "Verify the host is running, the REST endpoint contract matches qa-chaos, and the game id is available.",
-    );
+    const failure =
+      error.qaChaosFailure ??
+      makeFailure(
+        error.name === "QaChaosHttpError" && !reachedHost
+          ? "HOST_UNREACHABLE"
+          : "ROOM_LIFECYCLE_FAILED",
+        "high",
+        error.message,
+        error.details ?? { roomCode },
+        "Verify the host is running, the REST endpoint contract matches qa-chaos, and the game id is available.",
+      );
     failures.push(failure);
     runJson.outcome = { status: "failed", reason: failure.code };
   } finally {
@@ -536,7 +541,7 @@ async function waitForBrowserSeats({
   while (Date.now() < deadlineAt) {
     const earlyExitFailure = handleWorkerExits(runtimes, roomCode);
     if (earlyExitFailure) {
-      throw new Error(earlyExitFailure.message);
+      throw qaChaosFailureError(earlyExitFailure);
     }
     const poll = await pollRoom({
       baseUrl: config.baseUrl,
@@ -674,9 +679,18 @@ async function monitorRoom({
 
 function handleWorkerExits(runtimes, roomCode) {
   for (const runtime of runtimes) {
-    const earlyExit = runtime.exits.find((exit) => !exit.stopRequested);
-    if (!earlyExit) continue;
-    runtime.exits = runtime.exits.filter((exit) => exit.stopRequested);
+    const earlyExitIndex = runtime.exits.findIndex((exit) => !exit.stopRequested);
+    if (earlyExitIndex === -1) continue;
+    const [earlyExit] = runtime.exits.splice(earlyExitIndex, 1);
+    if (isWorkerSpawnFailureExit(earlyExit)) {
+      return makeFailure(
+        "WORKER_SPAWN_FAILED",
+        "high",
+        `${runtime.worker.name} failed to spawn worker command`,
+        workerSpawnFailureEvidence(runtime.worker, earlyExit),
+        "Install the worker CLI, fix PATH, or repair Windows shim resolution before rerunning qa-chaos.",
+      );
+    }
     if (runtime.launchCount === 1) {
       runtime.launch();
       continue;
@@ -690,6 +704,12 @@ function handleWorkerExits(runtimes, roomCode) {
     );
   }
   return null;
+}
+
+function qaChaosFailureError(failure) {
+  const error = new Error(failure.message);
+  error.qaChaosFailure = failure;
+  return error;
 }
 
 function publicConfig(config, runDir, runIndex) {

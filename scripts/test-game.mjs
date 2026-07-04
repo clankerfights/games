@@ -18,7 +18,7 @@ function arg(name, fallback) {
 
 function usage() {
   console.error(
-    "Usage: node scripts/test-game.mjs <game-directory> [--ui] [--all] [--seeds 42,1337] [--ticks N] [--max-snapshots N]",
+    "Usage: node scripts/test-game.mjs <game-directory> [--ui] [--all] [--seeds 42,1337] [--ticks N] [--max-snapshots N] [--strict-agent-lint]",
   );
 }
 
@@ -65,6 +65,7 @@ const logicArgs = [
 ];
 if (ticks) logicArgs.push("--ticks", ticks);
 if (hasFlag("trace")) logicArgs.push("--trace");
+if (hasFlag("strict-agent-lint")) logicArgs.push("--strict-agent-lint");
 runStep("Logic contract and simulation", logicArgs);
 
 if (includeScenarios) {

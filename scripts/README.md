@@ -8,9 +8,9 @@ The harness deliberately mirrors only the production contract that game authors 
 
 ## Components
 
-`test-game.mjs` is the agent-facing gauntlet command. It runs the logic sweep with deterministic seeds, automatically runs optional scenario fixtures when present, and can include browser UI checks with `--ui` or `--all`.
+`test-game.mjs` is the agent-facing gauntlet command. It runs the logic sweep with deterministic seeds, automatically runs optional scenario fixtures when present, and can include browser UI checks with `--ui` or `--all`. Pass `--strict-agent-lint` to make agent-playability findings fail the logic step.
 
-`test-game-logic.mjs` runs deterministic game simulations across player counts and seeds. It checks freezes, mutation, stale actions, replay divergence, termination, optional `GameLogic.invariants()`, and hidden-information leaks. Use `--seeds 42,1337` for repeated deterministic sweeps and `--trace` to print recent actions for a failing seed.
+`test-game-logic.mjs` runs deterministic game simulations across player counts and seeds. It checks freezes, mutation, stale actions, replay divergence, termination, optional `GameLogic.invariants()`, hidden-information leaks, and agent-playability warnings. Use `--seeds 42,1337` for repeated deterministic sweeps and `--trace` to print recent actions for a failing seed.
 
 `test-game-scenarios.mjs` runs optional game-authored `scenarios.json` fixtures. These fixtures are the general harness escape hatch for complex games: keep the platform checks generic, then add small scripted rule assertions for rare auctions, side pots, role timing, support resolution, debt handling, or other branch-heavy rules.
 
@@ -33,6 +33,32 @@ node scripts/test-game.mjs ./game-slug --all --seeds 42,1337
 ```
 
 The umbrella report is meant to be readable by coding agents. Failures include replay commands whenever possible.
+
+## Agent-playability lint
+
+The logic sweep also emits `AGENT-LINT <CODE> <game> <detail>` lines for states that are legal but hard for low-cost poll-loop agents to understand. Default mode reports these as warnings and does not change exit codes. `--strict-agent-lint` on either `test-game.mjs` or `test-game-logic.mjs` turns strict findings into logic failures; `RULES_FORMAT` and `FREETEXT_INVENTORY` never fail strict mode.
+
+Checks:
+
+- `OPTION_BUDGET`: a single `decision.type === "choose"` opportunity exposes more than 24 options.
+- `LABEL_MISSING`: a choose option lacks a non-empty string label. Raw decision options count as unlabeled.
+- `LABEL_CONTEXT_DUPLICATION`: more than half of the labels in one choose opportunity share a repeated substring longer than 40 characters.
+- `WAIT_SIGNAL_MISSING`: while `outcome()` is still `null`, a player has no actionable opportunity and no `kind:"wait"` opportunity.
+- `RULES_FORMAT`: warning-only heuristic over `manifest.rules`. It checks for coverage keywords for goal, visible state, decisions, phases, and outcome.
+- `FREETEXT_INVENTORY`: informational inventory of opportunities whose schemas request free-text or multi-field structured input.
+
+Games with a legitimate large choose surface may raise the option budget only with an explicit manifest block:
+
+```json
+{
+  "agentLint": {
+    "optionBudget": 36,
+    "reason": "Opening draft intentionally shows all legal card pairs."
+  }
+}
+```
+
+When an override applies to an `OPTION_BUDGET` finding, the lint detail includes the configured budget and reason.
 
 ## Agent-native live E2E
 

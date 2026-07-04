@@ -5,6 +5,11 @@ import path from "node:path";
 
 import { loadGameLogic } from "./lib/load-game-logic.mjs";
 import {
+  createAgentLintSession,
+  formatAgentLintFinding,
+  strictAgentLintFailures,
+} from "./lib/agent-lint.mjs";
+import {
   createSeededRandom,
   GameEngine,
   outcomeWinners,
@@ -27,7 +32,7 @@ function hasFlag(name) {
 
 function usage() {
   console.error(
-    "Usage: node scripts/test-game-logic.mjs <game-directory> [--players N] [--seed N] [--seeds 42,1337] [--sweep] [--ticks N] [--trace]",
+    "Usage: node scripts/test-game-logic.mjs <game-directory> [--players N] [--seed N] [--seeds 42,1337] [--sweep] [--ticks N] [--trace] [--strict-agent-lint]",
   );
 }
 
@@ -506,6 +511,8 @@ function runTest(playerCount, seed) {
   const rng = createSeededRandom(rngSeed);
   const players = makePlayers(playerCount);
   const engine = new GameEngine(GameLogic, players, {}, rngSeed);
+  const agentLint = createAgentLintSession(manifest);
+  const strictAgentLint = hasFlag("strict-agent-lint");
   const maxTicks =
     Number.parseInt(arg("ticks", "0"), 10) || manifest.maxTicks || 500;
   const failures = [
@@ -531,6 +538,7 @@ function runTest(playerCount, seed) {
     const state = engine.getState();
     if (state.phase !== undefined) phasesVisited.add(state.phase);
     if (engine.getResult() !== null) break;
+    agentLint.inspect(engine, players);
 
     const playerActions = [];
     for (const player of players) {
@@ -690,6 +698,14 @@ function runTest(playerCount, seed) {
 
   const finalLeak = checkViewSecrecy(engine, players, engine.getState());
   if (finalLeak && !failures.includes(finalLeak)) failures.push(finalLeak);
+
+  const agentLintFindings = agentLint.findings();
+  for (const finding of agentLintFindings) {
+    console.log(formatAgentLintFinding(finding, { strict: strictAgentLint }));
+  }
+  if (strictAgentLint) {
+    failures.push(...strictAgentLintFailures(agentLintFindings));
+  }
 
   if (engine.getResult() !== null && actionLog.length > 0) {
     const replay = new GameEngine(GameLogic, players, {}, rngSeed);

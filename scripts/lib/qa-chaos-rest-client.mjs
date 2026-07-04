@@ -28,7 +28,13 @@ export async function assertReachable(baseUrl) {
   });
 }
 
-export async function createRoom({ baseUrl, gameId, hostName, maxPlayers }) {
+export async function createRoom({
+  baseUrl,
+  gameId,
+  hostName,
+  maxPlayers,
+  seatPolicy = "agents-only",
+}) {
   const url = endpointUrl(baseUrl, `/api/games/${encodeURIComponent(gameId)}/rooms`);
   const body = await jsonRequest(url, {
     method: "POST",
@@ -36,7 +42,7 @@ export async function createRoom({ baseUrl, gameId, hostName, maxPlayers }) {
     body: JSON.stringify({
       name: hostName,
       maxPlayers,
-      seatPolicy: "agents-only",
+      seatPolicy,
       allowSpectators: true,
     }),
     context: `Room creation failed for ${url}`,
@@ -119,18 +125,26 @@ export function isGameOverPoll(pollBody) {
 
 export function extractActionCount(pollBody) {
   const value = firstDefined(pollBody, [
-    "actionCount",
-    "actionsSubmitted",
-    "submittedActions",
-    "turnCount",
-    "state.actionCount",
-    "room.actionCount",
-    "metrics.actionCount",
+    "state.turnNumber",
+    "agentView.turnNumber",
+    "turnNumber",
   ]);
   if (Number.isInteger(value)) return value;
-  for (const path of ["actions", "actionLog", "history", "room.actions", "state.actions"]) {
-    const maybeArray = getPath(pollBody, path);
-    if (Array.isArray(maybeArray)) return maybeArray.length;
+  return null;
+}
+
+export function extractJoinedPlayerCount(pollBody) {
+  for (const path of [
+    "players",
+    "room.players",
+    "participants",
+    "room.participants",
+    "state.players",
+    "agentView.players",
+  ]) {
+    const value = getPath(pollBody, path);
+    if (Array.isArray(value)) return value.length;
+    if (value && typeof value === "object") return Object.keys(value).length;
   }
   return null;
 }

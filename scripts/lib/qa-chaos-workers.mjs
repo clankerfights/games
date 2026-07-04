@@ -46,10 +46,15 @@ export function renderWorkerPrompt({ templatePath, values }) {
 
 export function prepareWorkerArtifacts({ worker, workerDir, prompt }) {
   mkdirSync(workerDir, { recursive: true });
+  mkdirSync(path.join(workerDir, "screenshots"), { recursive: true });
   writeFileSync(path.join(workerDir, "prompt.md"), prompt);
   writeFileSync(path.join(workerDir, "tests.jsonl"), "");
   writeFileSync(path.join(workerDir, "poll.jsonl"), "");
   writeFileSync(path.join(workerDir, "writes.jsonl"), "");
+  writeFileSync(path.join(workerDir, "actions.jsonl"), "");
+  writeFileSync(path.join(workerDir, "observations.jsonl"), "");
+  writeFileSync(path.join(workerDir, "console.jsonl"), "");
+  writeFileSync(path.join(workerDir, "network.jsonl"), "");
   writeFileSync(path.join(workerDir, "transcript.md"), "");
   return {
     ...worker,
@@ -58,6 +63,7 @@ export function prepareWorkerArtifacts({ worker, workerDir, prompt }) {
     stdoutPath: path.join(workerDir, "stdout.log"),
     stderrPath: path.join(workerDir, "stderr.log"),
     testsPath: path.join(workerDir, "tests.jsonl"),
+    writesPath: path.join(workerDir, "writes.jsonl"),
   };
 }
 

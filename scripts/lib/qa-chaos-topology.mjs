@@ -50,19 +50,56 @@ export function resolvePlayerCount(manifest, requestedPlayers, gameDir) {
   return { minPlayers, maxPlayers, playerCount };
 }
 
-export function buildRoster({ adapter, playerCount }) {
+export function buildRoster({ adapter, playerCount, browser = false }) {
   if (!ADAPTERS.has(adapter)) {
     throw new Error(`Unsupported --adapter ${adapter}; expected claude, codex, or mixed`);
   }
-  return Array.from({ length: playerCount }, (_, index) => {
-    const seatIndex = index + 1;
-    return {
-      seatIndex,
-      name: `REST-${seatIndex}`,
-      role: seatIndex === 1 ? "host-seat" : "player-seat",
-      adapter: resolveSeatAdapter(adapter, index),
-    };
-  });
+  if (!browser) {
+    return Array.from({ length: playerCount }, (_, index) => {
+      const seatIndex = index + 1;
+      return {
+        seatIndex,
+        name: `REST-${seatIndex}`,
+        role: seatIndex === 1 ? "host-seat" : "player-seat",
+        kind: "rest",
+        adapter: resolveSeatAdapter(adapter, index),
+      };
+    });
+  }
+
+  if (playerCount < 2) {
+    throw new Error("--browser requires at least two players: REST-1 host plus UI-1");
+  }
+
+  const roster = [
+    {
+      seatIndex: 1,
+      name: "REST-1",
+      role: "host-seat",
+      kind: "rest",
+      adapter: resolveSeatAdapter(adapter, 0),
+    },
+    {
+      seatIndex: 2,
+      name: "UI-1",
+      role: "browser-seat",
+      kind: "browser",
+      adapter: resolveSeatAdapter(adapter, 1),
+    },
+  ];
+
+  for (let zeroBasedSeatIndex = 2; zeroBasedSeatIndex < playerCount; zeroBasedSeatIndex += 1) {
+    const restNumber = zeroBasedSeatIndex;
+    roster.push({
+      seatIndex: zeroBasedSeatIndex + 1,
+      name: `REST-${restNumber}`,
+      role: "player-seat",
+      kind: "rest",
+      adapter: resolveSeatAdapter(adapter, zeroBasedSeatIndex),
+    });
+  }
+
+  return roster;
 }
 
 export function resolveSeatAdapter(adapter, zeroBasedSeatIndex) {

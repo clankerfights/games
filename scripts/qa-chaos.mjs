@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,7 @@ import {
   describesAutoplay,
   extractActionCount,
   extractCursor,
+  extractJoinedPlayerCount,
   fingerprintPoll,
   isGameOverPoll,
   joinRoom,
@@ -33,10 +34,16 @@ import {
   stopWorkerRuntimes,
 } from "./lib/qa-chaos-workers.mjs";
 import {
+  countWorkerActionSubmissions,
+  observedActionCount,
+} from "./lib/qa-chaos-action-budget.mjs";
+import {
+  createSweepLayout,
   createRunLayout,
   ensureReportDirs,
   makeFailure,
   timestampForPath,
+  writeSweepReports,
   writeReports,
   writeRunJson,
 } from "./lib/qa-chaos-reporting.mjs";
@@ -44,7 +51,8 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
-const promptTemplatePath = path.join(__dirname, "qa-chaos-worker-prompt.md");
+const promptTemplatePath = path.join(__dirname, "qa-chaos-rest-prompt.md");
+const browserPromptTemplatePath = path.join(__dirname, "qa-chaos-browser-prompt.md");
 
 const DEFAULTS = {
   adapter: "claude",
@@ -71,20 +79,25 @@ async function main() {
   }
   const config = resolveConfig(parsed);
   if (config.dryRun) {
-    printDryRun(config);
+    if (config.sweep) printSweepDryRun(config);
+    else printDryRun(config);
     return;
   }
-  await runAll(config);
+  if (config.sweep) await runSweep(config);
+  else await runAll(config);
 }
 
 function usage() {
   console.log(
     [
       "Usage: node scripts/qa-chaos.mjs <game-dir> [options]",
+      "       node scripts/qa-chaos.mjs --all [options]",
       "",
       "Options:",
       "  --adapter NAME          claude|codex|mixed (default: claude)",
       "  --players N             Player count (default: manifest.minPlayers)",
+      "  --browser               Replace one REST player seat with UI-1 browser worker",
+      "  --all                   Run every top-level game directory with manifest.json",
       "  --runs N                Independent room runs (default: 1)",
       "  --base URL              Host base URL (default: http://localhost:3000)",
       "  --mode MODE             smoke|full|weird (default: smoke)",
@@ -113,6 +126,14 @@ function parseCli(argv) {
       flags.add("dry-run");
       continue;
     }
+    if (arg === "--all") {
+      flags.add("all");
+      continue;
+    }
+    if (arg === "--browser") {
+      flags.add("browser");
+      continue;
+    }
     if (!arg.startsWith("--")) {
       positionals.push(arg);
       continue;
@@ -131,16 +152,49 @@ function parseCli(argv) {
   return {
     help: flags.has("help"),
     dryRun: flags.has("dry-run"),
+    all: flags.has("all"),
+    browser: flags.has("browser"),
     positionals,
     options,
   };
 }
 
 function resolveConfig(parsed) {
-  if (parsed.positionals.length !== 1) {
-    throw new Error("Expected exactly one <game-dir>. Use --help for usage.");
+  const timestamp = timestampForPath();
+  const outDir = path.resolve(
+    process.cwd(),
+    stringOption(parsed, "out-dir", "e2e-runs"),
+  );
+  if (parsed.all) {
+    if (parsed.positionals.length !== 0) {
+      throw new Error("--all does not accept a <game-dir>. Use --help for usage.");
+    }
+    const games = listCatalogGameDirs(process.cwd()).map((gameDir) =>
+      resolveGameConfig(parsed, gameDir, { outDir, timestamp }),
+    );
+    if (games.length === 0) {
+      throw new Error("No top-level game directories with manifest.json were found.");
+    }
+    return {
+      sweep: true,
+      dryRun: parsed.dryRun,
+      outDir,
+      timestamp,
+      sweepDir: createSweepLayout({ outDir, timestamp }),
+      games,
+    };
   }
-  const gameDir = path.resolve(process.cwd(), parsed.positionals[0]);
+
+  if (parsed.positionals.length !== 1) {
+    throw new Error("Expected exactly one <game-dir>, or --all. Use --help for usage.");
+  }
+  return resolveGameConfig(parsed, path.resolve(process.cwd(), parsed.positionals[0]), {
+    outDir,
+    timestamp,
+  });
+}
+
+function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
   if (!existsSync(path.join(gameDir, "manifest.json"))) {
     throw new Error(`Missing manifest.json in ${gameDir}`);
   }
@@ -160,13 +214,12 @@ function resolveConfig(parsed) {
     ? positiveIntegerOption(parsed, "players")
     : null;
   const playerRange = resolvePlayerCount(manifest, requestedPlayers, gameDir);
-  const roster = buildRoster({ adapter, playerCount: playerRange.playerCount });
+  const roster = buildRoster({
+    adapter,
+    playerCount: playerRange.playerCount,
+    browser: parsed.browser,
+  });
   const baseUrl = normalizeBaseUrl(stringOption(parsed, "base", DEFAULTS.base));
-  const outDir = path.resolve(
-    process.cwd(),
-    stringOption(parsed, "out-dir", "e2e-runs"),
-  );
-  const timestamp = timestampForPath();
   const runCount = positiveIntegerOption(parsed, "runs", DEFAULTS.runs);
   const maxActions = positiveIntegerOption(parsed, "max-actions", DEFAULTS.maxActions);
   const maxMinutes = positiveIntegerOption(parsed, "max-minutes", DEFAULTS.maxMinutes);
@@ -178,11 +231,13 @@ function resolveConfig(parsed) {
   const stallMs = positiveIntegerOption(parsed, "stall-ms", DEFAULTS.stallMs);
 
   return {
+    sweep: false,
     gameDir,
     manifest,
     gameId,
     gameSlug: manifest.slug ?? gameId,
     adapter,
+    browser: parsed.browser,
     mode,
     baseUrl,
     outDir,
@@ -206,6 +261,7 @@ function printDryRun(config) {
   console.log(`Game directory: ${config.gameDir}`);
   console.log(`Base URL: ${config.baseUrl}`);
   console.log(`Mode: ${config.mode}`);
+  console.log(`Browser worker: ${config.browser ? "enabled" : "disabled"}`);
   console.log(`Runs: ${config.runCount}`);
   console.log(
     `Budgets: maxActions=${config.budgets.maxActions}, maxMinutes=${config.budgets.maxMinutes}, pollTimeoutMs=${config.budgets.pollTimeoutMs}, stallMs=${config.budgets.stallMs}`,
@@ -223,15 +279,69 @@ function printDryRun(config) {
       const workerDir = path.join(runDir, "workers", worker.name);
       const command = commandForAdapter(worker.adapter, workerDir);
       console.log(
-        `Worker ${worker.name} (${worker.adapter}) command: ${formatCommandLine(command)} < ${path.join(workerDir, "prompt.md")}`,
+        `Worker ${worker.name}/${worker.kind} (${worker.adapter}) command: ${formatCommandLine(command)} < ${path.join(workerDir, "prompt.md")}`,
       );
+      console.log(`Worker ${worker.name}/${worker.kind} prompt template: ${promptTemplateForWorker(worker)}`);
     }
+  }
+}
+
+function printSweepDryRun(config) {
+  console.log("QA chaos sweep dry run");
+  console.log(`Games: ${config.games.length}`);
+  console.log(`Aggregate report path: ${path.join(config.sweepDir, "reports")}`);
+  for (const [index, gameConfig] of config.games.entries()) {
+    console.log("");
+    console.log(`[${index + 1}/${config.games.length}] ${gameConfig.gameSlug}`);
+    printDryRun(gameConfig);
   }
 }
 
 async function runAll(config) {
   for (let runIndex = 1; runIndex <= config.runCount; runIndex += 1) {
     await runOne(config, runIndex);
+  }
+}
+
+async function runSweep(config) {
+  const results = [];
+  for (const gameConfig of config.games) {
+    const startedAt = Date.now();
+    try {
+      await runAll(gameConfig);
+      results.push({
+        game: gameConfig.gameSlug,
+        status: "pass",
+        failureCodes: [],
+        durationMs: Date.now() - startedAt,
+        runDir: createRunLayout({
+          outDir: gameConfig.outDir,
+          timestamp: gameConfig.timestamp,
+          gameSlug: gameConfig.gameSlug,
+          runIndex: 1,
+          totalRuns: gameConfig.runCount,
+        }),
+      });
+    } catch (error) {
+      results.push({
+        game: gameConfig.gameSlug,
+        status: "fail",
+        failureCodes: Array.isArray(error.failureCodes)
+          ? error.failureCodes
+          : ["QA_CHAOS_RUN_FAILED"],
+        durationMs: Date.now() - startedAt,
+        runDir: error.runDir ?? null,
+        error: error.message,
+      });
+    }
+  }
+
+  writeSweepReports({ sweepDir: config.sweepDir, results });
+  const failed = results.filter((result) => result.status === "fail");
+  if (failed.length > 0) {
+    throw new Error(
+      `QA chaos sweep failed for ${failed.map((result) => result.game).join(", ")}; see ${path.join(config.sweepDir, "reports", "sweep-results.json")}`,
+    );
   }
 }
 
@@ -258,20 +368,27 @@ async function runOne(config, runIndex) {
   let roomCode = null;
   let workers = [];
   let runtimes = [];
+  let reachedHost = false;
   try {
     await assertReachable(config.baseUrl);
+    reachedHost = true;
     const host = config.roster[0];
     const created = await createRoom({
       baseUrl: config.baseUrl,
       gameId: config.gameId,
       hostName: host.name,
       maxPlayers: config.playerRange.playerCount,
+      seatPolicy: config.browser ? "anyone" : "agents-only",
     });
     roomCode = created.roomCode;
     const rosterWithCredentials = [
       { ...host, credentials: created.hostCredentials },
     ];
     for (const worker of config.roster.slice(1)) {
+      if (worker.kind === "browser") {
+        rosterWithCredentials.push({ ...worker, credentials: null });
+        continue;
+      }
       const joined = await joinRoom({
         baseUrl: config.baseUrl,
         roomCode,
@@ -279,12 +396,6 @@ async function runOne(config, runIndex) {
       });
       rosterWithCredentials.push({ ...worker, credentials: joined.credentials });
     }
-    await startRoom({
-      baseUrl: config.baseUrl,
-      roomCode,
-      sessionToken: created.hostCredentials.sessionToken,
-    });
-
     workers = rosterWithCredentials.map((worker) =>
       prepareLiveWorker({ config, runDir, roomCode, worker }),
     );
@@ -292,20 +403,51 @@ async function runOne(config, runIndex) {
       seatIndex: worker.seatIndex,
       name: worker.name,
       role: worker.role,
+      kind: worker.kind,
       adapter: worker.adapter,
-      playerId: worker.credentials.playerId,
+      playerId: worker.credentials?.playerId ?? null,
       artifactDir: worker.artifactDir,
     }));
+    runJson.room = { code: roomCode, started: false };
+    writeRunJson(runDir, runJson);
+
+    const browserRuntimes = workers
+      .filter((worker) => worker.kind === "browser")
+      .map((worker) => new WorkerRuntime(worker));
+    runtimes.push(...browserRuntimes);
+    for (const runtime of browserRuntimes) runtime.launch();
+
+    if (browserRuntimes.length > 0) {
+      await waitForBrowserSeats({
+        config,
+        roomCode,
+        hostToken: created.hostCredentials.sessionToken,
+        expectedPlayerCount: config.playerRange.playerCount,
+        runtimes,
+        failures,
+        startedAt,
+      });
+    }
+
+    await startRoom({
+      baseUrl: config.baseUrl,
+      roomCode,
+      sessionToken: created.hostCredentials.sessionToken,
+    });
     runJson.room = { code: roomCode, started: true };
     writeRunJson(runDir, runJson);
 
-    runtimes = workers.map((worker) => new WorkerRuntime(worker));
-    for (const runtime of runtimes) runtime.launch();
+    const restRuntimes = workers
+      .filter((worker) => worker.kind !== "browser")
+      .map((worker) => new WorkerRuntime(worker));
+    runtimes.push(...restRuntimes);
+    for (const runtime of restRuntimes) runtime.launch();
 
     const result = await monitorRoom({
       config,
       roomCode,
       hostToken: created.hostCredentials.sessionToken,
+      workers,
       runtimes,
       failures,
       startedAt,
@@ -313,7 +455,9 @@ async function runOne(config, runIndex) {
     runJson.outcome = result;
   } catch (error) {
     const failure = makeFailure(
-      error.name === "QaChaosHttpError" ? "HOST_UNREACHABLE" : "ROOM_LIFECYCLE_FAILED",
+      error.name === "QaChaosHttpError" && !reachedHost
+        ? "HOST_UNREACHABLE"
+        : "ROOM_LIFECYCLE_FAILED",
       "high",
       error.message,
       error.details ?? { roomCode },
@@ -341,9 +485,12 @@ async function runOne(config, runIndex) {
       const failureMessages = report.failures
         .map((failure) => `${failure.code}: ${failure.message}`)
         .join("; ");
-      throw new Error(
+      const error = new Error(
         `QA chaos run failed: ${failureMessages}; see ${path.join(runDir, "reports", "failures.json")}`,
       );
+      error.failureCodes = report.failures.map((failure) => failure.code);
+      error.runDir = runDir;
+      throw error;
     }
   }
 }
@@ -352,13 +499,13 @@ function prepareLiveWorker({ config, runDir, roomCode, worker }) {
   const workerDir = path.join(runDir, "workers", worker.name);
   mkdirSync(workerDir, { recursive: true });
   const prompt = renderWorkerPrompt({
-    templatePath: promptTemplatePath,
+    templatePath: promptTemplateForWorker(worker),
     values: {
       workerName: worker.name,
       role: worker.role,
       adapter: worker.adapter,
-      playerId: worker.credentials.playerId,
-      sessionToken: worker.credentials.sessionToken,
+      playerId: worker.credentials?.playerId ?? "(browser joins through UI)",
+      sessionToken: worker.credentials?.sessionToken ?? "(not provided to browser workers)",
       roomCode,
       baseUrl: config.baseUrl,
       artifactDir: workerDir,
@@ -376,10 +523,43 @@ function prepareLiveWorker({ config, runDir, roomCode, worker }) {
   return prepareWorkerArtifacts({ worker, workerDir, prompt });
 }
 
+async function waitForBrowserSeats({
+  config,
+  roomCode,
+  hostToken,
+  expectedPlayerCount,
+  runtimes,
+  startedAt,
+}) {
+  let cursor = null;
+  const deadlineAt = startedAt.getTime() + config.budgets.maxMinutes * 60_000;
+  while (Date.now() < deadlineAt) {
+    const earlyExitFailure = handleWorkerExits(runtimes, roomCode);
+    if (earlyExitFailure) {
+      throw new Error(earlyExitFailure.message);
+    }
+    const poll = await pollRoom({
+      baseUrl: config.baseUrl,
+      roomCode,
+      sessionToken: hostToken,
+      cursor,
+      timeoutMs: config.budgets.pollTimeoutMs,
+    });
+    cursor = extractCursor(poll) ?? cursor;
+    const joinedPlayerCount = extractJoinedPlayerCount(poll);
+    if (joinedPlayerCount !== null && joinedPlayerCount >= expectedPlayerCount) return;
+    await delay(config.budgets.pollIntervalMs);
+  }
+  throw new Error(
+    `Timed out waiting for browser worker to join room ${roomCode} before start`,
+  );
+}
+
 async function monitorRoom({
   config,
   roomCode,
   hostToken,
+  workers,
   runtimes,
   failures,
   startedAt,
@@ -387,7 +567,9 @@ async function monitorRoom({
   let cursor = null;
   let lastFingerprint = null;
   let lastProgressAt = Date.now();
-  let lastActionCount = null;
+  let initialTurnNumber = null;
+  let currentTurnNumber = null;
+  let lastActionCount = 0;
 
   while (true) {
     const now = Date.now();
@@ -423,15 +605,32 @@ async function monitorRoom({
       lastFingerprint = fingerprint;
       lastProgressAt = Date.now();
     }
-    const actionCount = extractActionCount(poll);
-    if (actionCount !== null) lastActionCount = actionCount;
-    if (lastActionCount !== null && lastActionCount > config.budgets.maxActions) {
+    const turnNumber = extractActionCount(poll);
+    if (turnNumber !== null) {
+      if (initialTurnNumber === null) initialTurnNumber = turnNumber;
+      currentTurnNumber = turnNumber;
+    }
+    const workerActions = countWorkerActionSubmissions(workers);
+    const actionSignal = observedActionCount({
+      workerActionCount: workerActions.actionCount,
+      currentTurnNumber,
+      initialTurnNumber,
+    });
+    lastActionCount = actionSignal.actionCount;
+    if (lastActionCount > config.budgets.maxActions) {
       failures.push(
         makeFailure(
           "MAX_ACTIONS_EXCEEDED",
           "high",
           `Submitted action budget exceeded ${config.budgets.maxActions}`,
-          { roomCode, actionCount: lastActionCount, maxActions: config.budgets.maxActions },
+          {
+            roomCode,
+            actionCount: lastActionCount,
+            maxActions: config.budgets.maxActions,
+            workerActionCount: actionSignal.workerActionCount,
+            turnDelta: actionSignal.turnDelta,
+            countedEntries: workerActions.countedEntries,
+          },
           "Lower worker exploration or increase the action budget for this game.",
         ),
       );
@@ -499,6 +698,7 @@ function publicConfig(config, runDir, runIndex) {
     gameId: config.gameId,
     gameSlug: config.gameSlug,
     adapter: config.adapter,
+    browser: config.browser,
     mode: config.mode,
     baseUrl: config.baseUrl,
     runIndex,
@@ -510,8 +710,11 @@ function publicConfig(config, runDir, runIndex) {
 }
 
 function expectationText(config, runIndex) {
+  const workerMode = config.browser
+    ? "REST model workers plus one Playwright UI worker"
+    : "isolated REST model workers";
   return [
-    `Run ${runIndex} should create, fill, start, and complete one ${config.gameSlug} room through isolated REST model workers.`,
+    `Run ${runIndex} should create, fill, start, and complete one ${config.gameSlug} room through ${workerMode}.`,
     `Workers must use only their own seat credentials, stay within ${config.budgets.maxActions} submitted actions and ${config.budgets.maxMinutes} minute(s), and append QA ledger entries to tests.jsonl.`,
   ].join(" ");
 }
@@ -559,6 +762,18 @@ function knownValueOptions() {
     "poll-timeout-ms",
     "out-dir",
   ]);
+}
+
+function promptTemplateForWorker(worker) {
+  return worker.kind === "browser" ? browserPromptTemplatePath : promptTemplatePath;
+}
+
+function listCatalogGameDirs(rootDir) {
+  return readdirSync(rootDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(rootDir, entry.name))
+    .filter((gameDir) => existsSync(path.join(gameDir, "manifest.json")))
+    .sort((left, right) => path.basename(left).localeCompare(path.basename(right)));
 }
 
 function delay(ms) {

@@ -14,7 +14,7 @@ import {
 import {
   assertReachable,
   createRoom,
-  describesAutoplay,
+  detectAutoplayedPlayers,
   extractActionCount,
   extractCursor,
   extractJoinedPlayerCount,
@@ -33,6 +33,7 @@ import {
   prepareWorkerArtifacts,
   renderWorkerPrompt,
   resolveCommandSpecForSpawn,
+  startAfterRestWorkersReady,
   stopWorkerRuntimes,
   workerSpawnFailureEvidence,
 } from "./lib/qa-chaos-workers.mjs";
@@ -67,6 +68,8 @@ const DEFAULTS = {
   pollTimeoutMs: 5000,
   stallMs: 90000,
   pollIntervalMs: 2000,
+  workerBootMs: 120000,
+  workerTrust: "scoped",
 };
 
 main().catch((error) => {
@@ -108,8 +111,10 @@ function usage() {
       "  --max-minutes N         Wall-clock budget per run (default: 20)",
       "  --stall-ms N            No-progress stall threshold (default: 90000)",
       "  --poll-timeout-ms N     Host poll timeout (default: 5000)",
+      "  --worker-boot-ms N      Wait for REST worker poll liveness before /start (default: 120000)",
+      "  --worker-trust MODE     scoped|full, full adds dangerous worker permission bypass (default: scoped)",
       "  --out-dir DIR           Artifact root (default: e2e-runs)",
-      "  --dry-run               Print topology, commands, budgets, and paths; spawn nothing",
+      "  --dry-run               Print topology, commands, budgets, and render worker artifacts; spawn nothing",
       "  --help                  Show this help",
     ].join("\n"),
   );
@@ -141,16 +146,17 @@ function parseCli(argv) {
       positionals.push(arg);
       continue;
     }
-    const name = arg.slice(2);
+    const equalsIndex = arg.indexOf("=");
+    const name = equalsIndex === -1 ? arg.slice(2) : arg.slice(2, equalsIndex);
     if (!knownValueOptions().has(name)) {
       throw new Error(`Unknown option ${arg}`);
     }
-    const value = argv[index + 1];
+    const value = equalsIndex === -1 ? argv[index + 1] : arg.slice(equalsIndex + 1);
     if (value === undefined || value.startsWith("--")) {
       throw new Error(`${arg} requires a value`);
     }
     options.set(name, value);
-    index += 1;
+    if (equalsIndex === -1) index += 1;
   }
   return {
     help: flags.has("help"),
@@ -212,6 +218,10 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
   if (!MODES.has(mode)) {
     throw new Error(`Unsupported --mode ${mode}; expected smoke, full, or weird`);
   }
+  const workerTrust = stringOption(parsed, "worker-trust", DEFAULTS.workerTrust);
+  if (!new Set(["scoped", "full"]).has(workerTrust)) {
+    throw new Error(`Unsupported --worker-trust ${workerTrust}; expected scoped or full`);
+  }
 
   const requestedPlayers = parsed.options.has("players")
     ? positiveIntegerOption(parsed, "players")
@@ -232,6 +242,11 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
     DEFAULTS.pollTimeoutMs,
   );
   const stallMs = positiveIntegerOption(parsed, "stall-ms", DEFAULTS.stallMs);
+  const workerBootMs = positiveIntegerOption(
+    parsed,
+    "worker-boot-ms",
+    DEFAULTS.workerBootMs,
+  );
 
   return {
     sweep: false,
@@ -243,6 +258,7 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
     browser: parsed.browser,
     mode,
     baseUrl,
+    workerTrust,
     outDir,
     timestamp,
     runCount,
@@ -254,6 +270,7 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
       maxMinutes,
       pollTimeoutMs,
       stallMs,
+      workerBootMs,
       pollIntervalMs: DEFAULTS.pollIntervalMs,
     },
   };
@@ -265,9 +282,10 @@ function printDryRun(config) {
   console.log(`Base URL: ${config.baseUrl}`);
   console.log(`Mode: ${config.mode}`);
   console.log(`Browser worker: ${config.browser ? "enabled" : "disabled"}`);
+  console.log(`Worker trust: ${config.workerTrust}`);
   console.log(`Runs: ${config.runCount}`);
   console.log(
-    `Budgets: maxActions=${config.budgets.maxActions}, maxMinutes=${config.budgets.maxMinutes}, pollTimeoutMs=${config.budgets.pollTimeoutMs}, stallMs=${config.budgets.stallMs}`,
+    `Budgets: maxActions=${config.budgets.maxActions}, maxMinutes=${config.budgets.maxMinutes}, pollTimeoutMs=${config.budgets.pollTimeoutMs}, stallMs=${config.budgets.stallMs}, workerBootMs=${config.budgets.workerBootMs}`,
   );
   for (let runIndex = 1; runIndex <= config.runCount; runIndex += 1) {
     const runDir = createRunLayout({
@@ -278,15 +296,70 @@ function printDryRun(config) {
       totalRuns: config.runCount,
     });
     console.log(`Run ${runIndex} report path: ${runDir}`);
+    ensureReportDirs(runDir);
     for (const worker of config.roster) {
       const workerDir = path.join(runDir, "workers", worker.name);
-      const command = resolveCommandSpecForSpawn(commandForAdapter(worker.adapter, workerDir));
+      const dryWorker = dryRunWorker(worker);
+      const prompt = renderWorkerPrompt({
+        templatePath: promptTemplateForWorker(worker),
+        values: {
+          workerName: worker.name,
+          role: worker.role,
+          adapter: worker.adapter,
+          playerId: dryWorker.credentials?.playerId ?? "(browser joins through UI)",
+          sessionToken: dryWorker.credentials?.sessionToken ?? "(not provided to browser workers)",
+          roomCode: "DRYRUN",
+          baseUrl: config.baseUrl,
+          artifactDir: workerDir,
+          gameId: config.gameId,
+          gameName: config.manifest.name ?? config.gameSlug,
+          playerCount: config.playerRange.playerCount,
+          mode: config.mode,
+          manifestRules: indentRules(config.manifest.rules),
+          maxActions: config.budgets.maxActions,
+          maxMinutes: config.budgets.maxMinutes,
+          pollTimeoutMs: config.budgets.pollTimeoutMs,
+          stallMs: config.budgets.stallMs,
+        },
+      });
+      const command = resolveCommandSpecForSpawn(
+        commandForAdapter(worker.adapter, workerDir, {
+          workerTrust: config.workerTrust,
+        }),
+      );
+      prepareWorkerArtifacts({
+        worker: {
+          ...dryWorker,
+          workerTrust: config.workerTrust,
+          commandSpec: command,
+        },
+        workerDir,
+        prompt,
+        workerConfig: {
+          baseUrl: config.baseUrl,
+          roomCode: "DRYRUN",
+          pollTimeoutMs: config.budgets.pollTimeoutMs,
+        },
+      });
       console.log(
         `Worker ${worker.name}/${worker.kind} (${worker.adapter}) command: ${formatCommandLine(command)} < ${path.join(workerDir, "prompt.md")}`,
       );
       console.log(`Worker ${worker.name}/${worker.kind} prompt template: ${promptTemplateForWorker(worker)}`);
     }
   }
+}
+
+function dryRunWorker(worker) {
+  if (worker.kind === "browser") {
+    return { ...worker, credentials: null };
+  }
+  return {
+    ...worker,
+    credentials: {
+      playerId: `dry-run-${worker.name.toLowerCase()}`,
+      sessionToken: `dry-run-token-${worker.name.toLowerCase()}`,
+    },
+  };
 }
 
 function printSweepDryRun(config) {
@@ -432,19 +505,28 @@ async function runOne(config, runIndex) {
       });
     }
 
-    await startRoom({
-      baseUrl: config.baseUrl,
-      roomCode,
-      sessionToken: created.hostCredentials.sessionToken,
-    });
-    runJson.room = { code: roomCode, started: true };
-    writeRunJson(runDir, runJson);
-
     const restRuntimes = workers
       .filter((worker) => worker.kind !== "browser")
       .map((worker) => new WorkerRuntime(worker));
     runtimes.push(...restRuntimes);
     for (const runtime of restRuntimes) runtime.launch();
+
+    await startAfterRestWorkersReady({
+      restWorkers: workers.filter((worker) => worker.kind !== "browser"),
+      runtimes,
+      roomCode,
+      workerBootMs: config.budgets.workerBootMs,
+      checkIntervalMs: config.budgets.pollIntervalMs,
+      getEarlyExitFailure: () => handleWorkerExits(runtimes, roomCode),
+      start: () =>
+        startRoom({
+          baseUrl: config.baseUrl,
+          roomCode,
+          sessionToken: created.hostCredentials.sessionToken,
+        }),
+    });
+    runJson.room = { code: roomCode, started: true };
+    writeRunJson(runDir, runJson);
 
     const result = await monitorRoom({
       config,
@@ -525,7 +607,22 @@ function prepareLiveWorker({ config, runDir, roomCode, worker }) {
       stallMs: config.budgets.stallMs,
     },
   });
-  return prepareWorkerArtifacts({ worker, workerDir, prompt });
+  return prepareWorkerArtifacts({
+    worker: {
+      ...worker,
+      workerTrust: config.workerTrust,
+      commandSpec: commandForAdapter(worker.adapter, workerDir, {
+        workerTrust: config.workerTrust,
+      }),
+    },
+    workerDir,
+    prompt,
+    workerConfig: {
+      baseUrl: config.baseUrl,
+      roomCode,
+      pollTimeoutMs: config.budgets.pollTimeoutMs,
+    },
+  });
 }
 
 async function waitForBrowserSeats({
@@ -641,13 +738,16 @@ async function monitorRoom({
       );
       return { status: "failed", reason: "MAX_ACTIONS_EXCEEDED", actionCount: lastActionCount };
     }
-    if (describesAutoplay(poll)) {
+    const autoplayedPlayers = detectAutoplayedPlayers(poll);
+    if (autoplayedPlayers.length > 0) {
       failures.push(
         makeFailure(
           "REST_TURN_AUTOPLAYED",
           "high",
-          "Poll evidence indicates an autoplay or missed deadline.",
-          { roomCode, poll },
+          `Player autoPlayCount exceeded zero: ${autoplayedPlayers
+            .map((player) => `${player.label}=${player.autoPlayCount}`)
+            .join(", ")}`,
+          { roomCode, autoplayedPlayers },
           "Inspect worker stdout and turn deadlines; workers must submit before urgent deadlines.",
         ),
       );
@@ -724,6 +824,7 @@ function publicConfig(config, runDir, runIndex) {
     runIndex,
     runCount: config.runCount,
     playerCount: config.playerRange.playerCount,
+    workerTrust: config.workerTrust,
     budgets: config.budgets,
     runDir,
   };
@@ -780,6 +881,8 @@ function knownValueOptions() {
     "max-minutes",
     "stall-ms",
     "poll-timeout-ms",
+    "worker-boot-ms",
+    "worker-trust",
     "out-dir",
   ]);
 }

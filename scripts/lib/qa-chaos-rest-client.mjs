@@ -149,8 +149,10 @@ export function extractJoinedPlayerCount(pollBody) {
   return null;
 }
 
-export function describesAutoplay(pollBody) {
-  return /auto[-_ ]?play|autoplayed|deadline missed/i.test(stableStringify(pollBody));
+export function detectAutoplayedPlayers(pollBody) {
+  return extractAutoPlayCountRows(pollBody).filter(
+    (player) => player.autoPlayCount > 0,
+  );
 }
 
 async function jsonRequest(url, options) {
@@ -251,6 +253,31 @@ function getPath(object, dottedPath) {
     if (!current || typeof current !== "object") return undefined;
     return current[key];
   }, object);
+}
+
+function extractAutoPlayCountRows(pollBody) {
+  const players = getPath(pollBody, "state.players");
+  if (Array.isArray(players)) {
+    return players.flatMap((player, index) =>
+      autoPlayCountRow(player, `state.players[${index}]`, index),
+    );
+  }
+  if (players && typeof players === "object") {
+    return Object.entries(players).flatMap(([key, player], index) =>
+      autoPlayCountRow(player, `state.players.${key}`, index, key),
+    );
+  }
+  return [];
+}
+
+function autoPlayCountRow(player, fallbackLabel, index, objectKey = null) {
+  if (!player || typeof player !== "object") return [];
+  const autoPlayCount = player.autoPlayCount;
+  if (!Number.isInteger(autoPlayCount)) return [];
+  const playerId = firstString(player, ["id", "playerId", "participantId"]) ?? objectKey;
+  const name = firstString(player, ["name", "displayName", "label"]);
+  const label = name && playerId ? `${name} (${playerId})` : name ?? playerId ?? fallbackLabel;
+  return [{ index, playerId, name, label, autoPlayCount }];
 }
 
 function stableStringify(value) {

@@ -720,8 +720,8 @@ function copyState(state) {
     currentPrompt: state.currentPrompt,
     responseDeck: state.responseDeck,
     responseDiscard: state.responseDiscard,
+    responseRecycleOrder: state.responseRecycleOrder,
     hands: state.hands,
-    roundHands: state.roundHands,
     submissions: state.submissions,
     partialSubmissions: state.partialSubmissions || {},
     submitted: state.submitted,
@@ -748,17 +748,6 @@ function dealInitialHands(playerIds, deck, handSize) {
     }
   }
   return { hands: hands, deck: nextDeck };
-}
-
-function buildRoundHands(playerIds, random, roundCount, handSize) {
-  var roundHands = [];
-  var i, deck, dealt;
-  for (i = 0; i < roundCount; i++) {
-    deck = random.shuffle(makeIndexArray(WHITE_CARDS.length));
-    dealt = dealInitialHands(playerIds, deck, handSize);
-    roundHands.push(dealt.hands);
-  }
-  return roundHands;
 }
 
 function getPrompt(state) {
@@ -835,7 +824,44 @@ function validNextCardPick(hand, selectedIds, cardId, pick) {
   return hasCard(hand, cardId);
 }
 
-function replenishHand(state, hand, selectedIds) {
+function heldCardMap(hands, overridePlayerId, overrideHand) {
+  var held = {};
+  var pid, hand, i;
+  for (pid in hands) {
+    hand = pid === overridePlayerId ? overrideHand : hands[pid];
+    if (!Array.isArray(hand)) continue;
+    for (i = 0; i < hand.length; i++) held[hand[i]] = true;
+  }
+  return held;
+}
+
+function removeHeldCards(cards, held) {
+  var out = [];
+  var i, id;
+  for (i = 0; i < cards.length; i++) {
+    id = cards[i];
+    if (!held[id]) out.push(id);
+  }
+  return out;
+}
+
+function orderCardsByRecycleSeed(cards, recycleOrder) {
+  var available = {};
+  var out = [];
+  var i, id;
+  for (i = 0; i < cards.length; i++) available[cards[i]] = true;
+  for (i = 0; i < recycleOrder.length; i++) {
+    id = recycleOrder[i];
+    if (available[id]) out.push(id);
+  }
+  return out;
+}
+
+function recycleResponseDiscard(discard, recycleOrder, held) {
+  return orderCardsByRecycleSeed(removeHeldCards(discard, held), recycleOrder);
+}
+
+function replenishHand(state, playerId, hand, selectedIds) {
   var selected = {};
   var i;
   for (i = 0; i < selectedIds.length; i++) selected[selectedIds[i]] = true;
@@ -845,22 +871,39 @@ function replenishHand(state, hand, selectedIds) {
     if (!selected[hand[i]]) newHand.push(hand[i]);
   }
 
-  var deck = state.responseDeck.slice();
-  var discard = state.responseDiscard.slice();
+  var held = heldCardMap(state.hands, playerId, newHand);
+  var recycleOrder = state.responseRecycleOrder || makeIndexArray(WHITE_CARDS.length);
+  var deck = removeHeldCards(state.responseDeck || [], held);
+  var discard = removeHeldCards(state.responseDiscard || [], held);
   var drawCount = selectedIds.length;
+  var cardId;
   while (drawCount > 0) {
     if (deck.length === 0 && discard.length > 0) {
-      deck = discard;
+      deck = recycleResponseDiscard(discard, recycleOrder, held);
       discard = [];
     }
     if (deck.length === 0) break;
-    newHand.push(deck[0]);
+    cardId = deck[0];
     deck = deck.slice(1);
+    if (held[cardId]) continue;
+    newHand.push(cardId);
+    held[cardId] = true;
     drawCount--;
   }
 
-  discard = discard.concat(selectedIds);
   return { hand: newHand, deck: deck, discard: discard };
+}
+
+function submittedCardIds(submissions) {
+  var out = [];
+  var pid, cardIds, i;
+  for (pid in submissions) {
+    if (!submissions[pid] || !Array.isArray(submissions[pid].cardIds))
+      continue;
+    cardIds = submissions[pid].cardIds;
+    for (i = 0; i < cardIds.length; i++) out.push(cardIds[i]);
+  }
+  return out;
 }
 
 function allSubmittersSubmitted(state) {
@@ -979,6 +1022,8 @@ function shouldEnd(state) {
 
 function startNextRound(state) {
   var next = copyState(state);
+  var held = heldCardMap(state.hands, null, null);
+  var submittedIds = submittedCardIds(state.submissions || {});
   next.phase = "submit";
   next.round = state.round + 1;
   next.judgeIndex = (state.judgeIndex + 1) % state.players.length;
@@ -986,9 +1031,12 @@ function startNextRound(state) {
   next.currentPrompt =
     state.promptDeck[state.promptCursor % state.promptDeck.length];
   next.promptCursor = state.promptCursor + 1;
-  if (state.roundHands && state.roundHands[next.round - 1]) {
-    next.hands = cloneHands(state.roundHands[next.round - 1]);
-  }
+  next.responseDeck = removeHeldCards(state.responseDeck || [], held);
+  next.responseDiscard = removeHeldCards(
+    (state.responseDiscard || []).concat(submittedIds),
+    held,
+  );
+  next.hands = cloneHands(state.hands);
   next.submissions = {};
   next.partialSubmissions = {};
   next.submitted = {};
@@ -1141,7 +1189,7 @@ var GameLogic = {
     var promptDeck = ctx.random.shuffle(makeIndexArray(BLACK_CARDS.length));
     var responseDeck = ctx.random.shuffle(makeIndexArray(WHITE_CARDS.length));
     var dealt = dealInitialHands(playerIds, responseDeck, 8);
-    var roundHands = buildRoundHands(playerIds, ctx.random, maxRounds, 8);
+    var responseRecycleOrder = ctx.random.shuffle(makeIndexArray(WHITE_CARDS.length));
     var anonymousOrders = [];
     for (i = 0; i < maxRounds + 2; i++)
       anonymousOrders.push(ctx.random.shuffle(playerIds));
@@ -1160,8 +1208,8 @@ var GameLogic = {
       currentPrompt: promptDeck[0],
       responseDeck: dealt.deck,
       responseDiscard: [],
-      hands: cloneHands(roundHands[0]),
-      roundHands: roundHands,
+      responseRecycleOrder: responseRecycleOrder,
+      hands: cloneHands(dealt.hands),
       submissions: {},
       partialSubmissions: {},
       submitted: {},
@@ -1222,7 +1270,7 @@ var GameLogic = {
 
       if (!validCardSelection(hand, chosenIds, prompt.pick)) return state;
 
-      var draw = replenishHand(state, hand, chosenIds);
+      var draw = replenishHand(state, playerId, hand, chosenIds);
       var nextHands = cloneHands(state.hands);
       var nextSubmissions = cloneSubmissions(state.submissions);
       var nextSubmitted = cloneMap(state.submitted);
@@ -1625,6 +1673,57 @@ var GameLogic = {
     /** @type {Object} */
     var projection = this.internalTurnProjection(state, null) || { view: {} };
     return this.internalOutcomeFromResult(projection.result);
+  },
+
+  invariants: function (state, context) {
+    var checks = [];
+    var held = {};
+    var i, pid, hand, id, first;
+    for (pid in state.hands || {}) {
+      hand = state.hands[pid] || [];
+      var seen = {};
+      for (i = 0; i < hand.length; i++) {
+        id = hand[i];
+        if (seen[id] !== undefined) {
+          checks.push({
+            ok: false,
+            code: "DUPLICATE_HAND_CARD",
+            error:
+              "Player " +
+              pid +
+              " has duplicate white card " +
+              id +
+              " at hand slots " +
+              seen[id] +
+              " and " +
+              i,
+          });
+        }
+        seen[id] = i;
+        if (held[id] === undefined)
+          held[id] = { playerId: pid, slot: i };
+      }
+    }
+    for (i = 0; i < (state.responseDeck || []).length; i++) {
+      id = state.responseDeck[i];
+      first = held[id];
+      if (first !== undefined) {
+        checks.push({
+          ok: false,
+          code: "HELD_CARD_IN_RESPONSE_DECK",
+          error:
+            "White card " +
+            id +
+            " is held by " +
+            first.playerId +
+            " at hand slot " +
+            first.slot +
+            " and also appears in responseDeck at index " +
+            i,
+        });
+      }
+    }
+    return checks;
   },
 
   validate: function () {

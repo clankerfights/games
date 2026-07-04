@@ -1347,10 +1347,10 @@ var GameLogic = {
     var failures = [];
     var total = 0;
     var i, pid, id;
-    function add(id) {
-      if (!id) return;
-      if (seen[id]) failures.push("duplicate card location: " + id);
-      seen[id] = true;
+    function add(cardId) {
+      if (!cardId) return;
+      if (seen[cardId]) failures.push("duplicate card location: " + cardId);
+      seen[cardId] = true;
       total += 1;
     }
     for (i = 0; i < state.drawPile.length; i++) add(state.drawPile[i]);

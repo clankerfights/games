@@ -505,7 +505,7 @@ var GameLogic = {
             },
           },
         },
-        required: surface === "agent" ? false : true,
+        required: surface !== "agent",
       });
     }
 

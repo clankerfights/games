@@ -63,6 +63,8 @@ node ./act.mjs action <number> <actionSetId> ['{"args":...}']
 
 The helper POSTs with your Bearer token, appends one mechanical `writes.jsonl` line, and prints the response, which may include a fresh `POLL`. Do not hand-write action lines to `writes.jsonl`; treat it as helper-owned for REST writes. If the helper output includes a fresh poll, reason from that poll before any other write.
 
+After your first successful action response, immediately append one QA ledger entry with `node ./act.mjs test ...` before the next poll unless the response already shows `game_over`; if it shows `game_over`, make that entry your game-over ledger entry. The entry may be simple: name the first legal action path you proved, cite `writes.jsonl`, and mark it pass/block/fail honestly.
+
 ```text
 node ./act.mjs chat "<text>" [channel]
 ```
@@ -71,7 +73,8 @@ Use chat only after any required decision submission, and only on channels expos
 
 5. If an action write returns 409, immediately run `node ./poll-loop.mjs` again and continue from the fresh state unless the poll shows game over, no legal actions for you, privacy leak, or hard failure.
 6. Between poll-loop invocations, record attempted or blocked QA ideas through `node ./act.mjs test ...`. Never delay an urgent legal action for QA ledger polish.
-7. After each decision, skipped decision, chat, QA note, or game-over observation, run `node ./poll-loop.mjs` again. Stop only when the game is over, the orchestrator kills the process, privacy is violated, or a hard failure prevents legal play.
+7. When any poll or action response shows `game_over`, append a final `node ./act.mjs test ...` ledger entry for the completed run before stopping. If your first successful action ended the game, one game-over entry satisfies both cadence requirements.
+8. After each decision, skipped decision, chat, QA note, or game-over observation, run `node ./poll-loop.mjs` again unless you just wrote the final game-over ledger entry. Stop only when the game is over, the orchestrator kills the process, privacy is violated, or a hard failure prevents legal play.
 
 ## QA Ledger
 

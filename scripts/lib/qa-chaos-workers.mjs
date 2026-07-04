@@ -264,9 +264,11 @@ export class WorkerRuntime {
     this.stopRequested = true;
     if (!this.child || this.child.killed) return;
     const child = this.child;
+    await delay(1500);
+    if (!isChildRunning(child)) return;
     child.kill("SIGTERM");
     await delay(1500);
-    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+    if (isChildRunning(child)) child.kill("SIGKILL");
   }
 
   recordSpawnError({ error, commandLine, stdout, stderr }) {
@@ -288,6 +290,10 @@ export class WorkerRuntime {
 
 export async function stopWorkerRuntimes(runtimes) {
   await Promise.all(runtimes.map((runtime) => runtime.stop()));
+}
+
+function isChildRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
 }
 
 function shellQuote(value) {

@@ -42,6 +42,11 @@ import {
   observedActionCount,
 } from "./lib/qa-chaos-action-budget.mjs";
 import {
+  countWorkerLedgerEntries,
+  makeQaLedgerEmptyFailures,
+  waitForLedgerGrace,
+} from "./lib/qa-chaos-ledger-grace.mjs";
+import {
   createSweepLayout,
   createRunLayout,
   ensureReportDirs,
@@ -69,6 +74,7 @@ const DEFAULTS = {
   stallMs: 90000,
   pollIntervalMs: 2000,
   workerBootMs: 120000,
+  ledgerGraceMs: 90000,
   workerTrust: "scoped",
 };
 
@@ -112,6 +118,7 @@ function usage() {
       "  --stall-ms N            No-progress stall threshold (default: 90000)",
       "  --poll-timeout-ms N     Host poll timeout (default: 5000)",
       "  --worker-boot-ms N      Wait for REST worker poll liveness before /start (default: 120000)",
+      "  --ledger-grace-ms N     Wait after game_over for non-empty worker test ledgers (default: 90000)",
       "  --worker-trust MODE     scoped|full, full adds dangerous worker permission bypass (default: scoped)",
       "  --out-dir DIR           Artifact root (default: e2e-runs)",
       "  --dry-run               Print topology, commands, budgets, and render worker artifacts; spawn nothing",
@@ -247,6 +254,11 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
     "worker-boot-ms",
     DEFAULTS.workerBootMs,
   );
+  const ledgerGraceMs = positiveIntegerOption(
+    parsed,
+    "ledger-grace-ms",
+    DEFAULTS.ledgerGraceMs,
+  );
 
   return {
     sweep: false,
@@ -271,6 +283,7 @@ function resolveGameConfig(parsed, gameDir, { outDir, timestamp }) {
       pollTimeoutMs,
       stallMs,
       workerBootMs,
+      ledgerGraceMs,
       pollIntervalMs: DEFAULTS.pollIntervalMs,
     },
   };
@@ -285,7 +298,7 @@ function printDryRun(config) {
   console.log(`Worker trust: ${config.workerTrust}`);
   console.log(`Runs: ${config.runCount}`);
   console.log(
-    `Budgets: maxActions=${config.budgets.maxActions}, maxMinutes=${config.budgets.maxMinutes}, pollTimeoutMs=${config.budgets.pollTimeoutMs}, stallMs=${config.budgets.stallMs}, workerBootMs=${config.budgets.workerBootMs}`,
+    `Budgets: maxActions=${config.budgets.maxActions}, maxMinutes=${config.budgets.maxMinutes}, pollTimeoutMs=${config.budgets.pollTimeoutMs}, stallMs=${config.budgets.stallMs}, workerBootMs=${config.budgets.workerBootMs}, ledgerGraceMs=${config.budgets.ledgerGraceMs}`,
   );
   for (let runIndex = 1; runIndex <= config.runCount; runIndex += 1) {
     const runDir = createRunLayout({
@@ -555,6 +568,9 @@ async function runOne(config, runIndex) {
   } finally {
     await stopWorkerRuntimes(runtimes);
     runJson.timings.endedAt = new Date().toISOString();
+    if (workers.length > 0 && !runJson.outcome.ledgerEntryCounts) {
+      runJson.outcome.ledgerEntryCounts = countWorkerLedgerEntries(workers);
+    }
     writeRunJson(runDir, runJson);
     const report = writeReports({
       runDir,
@@ -754,11 +770,42 @@ async function monitorRoom({
       return { status: "failed", reason: "REST_TURN_AUTOPLAYED", actionCount: lastActionCount };
     }
     if (isGameOverPoll(poll)) {
+      const ledgerGrace = await waitForLedgerGrace({
+        workers,
+        ledgerGraceMs: config.budgets.ledgerGraceMs,
+        checkIntervalMs: config.budgets.pollIntervalMs,
+      });
+      if (ledgerGrace.expired) {
+        failures.push(
+          ...makeQaLedgerEmptyFailures({
+            workers,
+            ledgerEntryCounts: ledgerGrace.ledgerEntryCounts,
+            roomCode,
+            ledgerGraceMs: config.budgets.ledgerGraceMs,
+          }),
+        );
+        return {
+          status: "failed",
+          reason: "QA_LEDGER_EMPTY",
+          finalStatus: "game_over",
+          actionCount: lastActionCount,
+          ledgerEntryCounts: ledgerGrace.ledgerEntryCounts,
+          ledgerGrace: {
+            status: ledgerGrace.status,
+            elapsedMs: ledgerGrace.elapsedMs,
+          },
+        };
+      }
       return {
         status: "passed",
         reason: null,
         finalStatus: "game_over",
         actionCount: lastActionCount,
+        ledgerEntryCounts: ledgerGrace.ledgerEntryCounts,
+        ledgerGrace: {
+          status: ledgerGrace.status,
+          elapsedMs: ledgerGrace.elapsedMs,
+        },
       };
     }
     if (Date.now() - lastProgressAt > config.budgets.stallMs) {
@@ -882,6 +929,7 @@ function knownValueOptions() {
     "stall-ms",
     "poll-timeout-ms",
     "worker-boot-ms",
+    "ledger-grace-ms",
     "worker-trust",
     "out-dir",
   ]);

@@ -60,6 +60,10 @@ For each UI gesture that submits or attempts to submit a game decision, append o
 
 Also write observations to `observations.jsonl`, browser gestures to `actions.jsonl`, console errors to `console.jsonl`, network failures to `network.jsonl`, QA cases through `node ./act.mjs test ...`, and narrative notes to `transcript.md` under your artifact directory.
 
+After your first successful UI decision submission, immediately append one QA ledger entry with `node ./act.mjs test ...` before continuing, unless that decision ended the game. If it ended the game, make that entry the game-over ledger entry. Cite the relevant screenshot or `writes.jsonl` entry.
+
+When you observe `game_over`, append a final `node ./act.mjs test ...` ledger entry for the completed run before closing the browser or ending the session. If your first successful decision ended the game, one game-over entry satisfies both cadence requirements.
+
 ## QA Ledger
 
 Record each attempted or blocked QA idea through the helper from this directory. The helper owns `tests.jsonl`; do not edit or append that file by hand.

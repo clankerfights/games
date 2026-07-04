@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  copyFileSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -8,12 +9,29 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export function commandForAdapter(adapter, workerDir) {
+const WORKER_TRUST_MODES = new Set(["scoped", "full"]);
+const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const POLL_LOOP_TEMPLATE_PATH = path.join(SCRIPTS_DIR, "qa-chaos-poll-loop.mjs");
+const ACT_HELPER_TEMPLATE_PATH = path.join(SCRIPTS_DIR, "qa-chaos-act.mjs");
+
+export function commandForAdapter(adapter, workerDir, options = {}) {
+  const workerTrust = options.workerTrust ?? "scoped";
+  if (!WORKER_TRUST_MODES.has(workerTrust)) {
+    throw new Error(`Unsupported worker trust ${workerTrust}; expected scoped or full`);
+  }
+
   if (adapter === "claude") {
+    const args = ["-p", "--model", "sonnet", "--effort", "low"];
+    if (workerTrust === "full") {
+      args.push("--dangerously-skip-permissions");
+    } else {
+      args.push("--allowedTools", "Bash");
+    }
     return {
       command: "claude",
-      args: ["-p", "--model", "sonnet", "--effort", "low"],
+      args,
     };
   }
   if (adapter === "codex") {
@@ -25,6 +43,8 @@ export function commandForAdapter(adapter, workerDir) {
         "gpt-5.5",
         "-c",
         'model_reasoning_effort="low"',
+        "-c",
+        "sandbox_workspace_write.network_access=true",
         "--sandbox",
         "workspace-write",
         "-C",
@@ -80,18 +100,27 @@ export function renderWorkerPrompt({ templatePath, values }) {
   return text;
 }
 
-export function prepareWorkerArtifacts({ worker, workerDir, prompt }) {
+export function prepareWorkerArtifacts({ worker, workerDir, prompt, workerConfig = null }) {
   mkdirSync(workerDir, { recursive: true });
   mkdirSync(path.join(workerDir, "screenshots"), { recursive: true });
+  const pollPath = path.join(workerDir, "poll.jsonl");
   writeFileSync(path.join(workerDir, "prompt.md"), prompt);
   writeFileSync(path.join(workerDir, "tests.jsonl"), "");
-  writeFileSync(path.join(workerDir, "poll.jsonl"), "");
+  writeFileSync(pollPath, "");
   writeFileSync(path.join(workerDir, "writes.jsonl"), "");
   writeFileSync(path.join(workerDir, "actions.jsonl"), "");
   writeFileSync(path.join(workerDir, "observations.jsonl"), "");
   writeFileSync(path.join(workerDir, "console.jsonl"), "");
   writeFileSync(path.join(workerDir, "network.jsonl"), "");
   writeFileSync(path.join(workerDir, "transcript.md"), "");
+  if (worker.kind === "rest") {
+    writeFileSync(
+      path.join(workerDir, "worker-config.json"),
+      JSON.stringify(workerConfigForArtifact({ worker, workerConfig }), null, 2),
+    );
+    copyFileSync(POLL_LOOP_TEMPLATE_PATH, path.join(workerDir, "poll-loop.mjs"));
+    copyFileSync(ACT_HELPER_TEMPLATE_PATH, path.join(workerDir, "act.mjs"));
+  }
   return {
     ...worker,
     artifactDir: workerDir,
@@ -99,8 +128,83 @@ export function prepareWorkerArtifacts({ worker, workerDir, prompt }) {
     stdoutPath: path.join(workerDir, "stdout.log"),
     stderrPath: path.join(workerDir, "stderr.log"),
     testsPath: path.join(workerDir, "tests.jsonl"),
+    pollPath,
     writesPath: path.join(workerDir, "writes.jsonl"),
   };
+}
+
+function workerConfigForArtifact({ worker, workerConfig }) {
+  const config = workerConfig ?? {};
+  const credentials = worker.credentials ?? {};
+  return {
+    baseUrl: config.baseUrl,
+    roomCode: config.roomCode,
+    playerId: credentials.playerId ?? config.playerId,
+    sessionToken: credentials.sessionToken ?? config.sessionToken,
+    pollTimeoutMs: config.pollTimeoutMs,
+    workerName: worker.name,
+  };
+}
+
+export async function startAfterRestWorkersReady({
+  restWorkers,
+  runtimes = [],
+  roomCode,
+  workerBootMs,
+  checkIntervalMs = 250,
+  getEarlyExitFailure = null,
+  start,
+}) {
+  await waitForRestWorkersReady({
+    restWorkers,
+    runtimes,
+    roomCode,
+    workerBootMs,
+    checkIntervalMs,
+    getEarlyExitFailure,
+  });
+  return start();
+}
+
+export async function waitForRestWorkersReady({
+  restWorkers,
+  runtimes = [],
+  roomCode,
+  workerBootMs,
+  checkIntervalMs = 250,
+  getEarlyExitFailure = null,
+}) {
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + workerBootMs;
+  let readiness = restWorkers.map(readRestWorkerReadiness);
+
+  while (true) {
+    const earlyExitFailure =
+      typeof getEarlyExitFailure === "function" ? getEarlyExitFailure(runtimes) : null;
+    if (earlyExitFailure) throw qaChaosFailureError(earlyExitFailure);
+
+    readiness = restWorkers.map(readRestWorkerReadiness);
+    if (readiness.every((worker) => worker.ready)) {
+      return {
+        roomCode,
+        workerBootMs,
+        durationMs: Date.now() - startedAt,
+        workers: readiness,
+      };
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) break;
+    await delay(Math.min(checkIntervalMs, remainingMs));
+  }
+
+  throw qaChaosFailureError(
+    workerBootTimeoutFailure({
+      roomCode,
+      workerBootMs,
+      readiness,
+    }),
+  );
 }
 
 export class WorkerRuntime {
@@ -115,7 +219,10 @@ export class WorkerRuntime {
   launch() {
     this.launchCount += 1;
     const commandSpec = resolveCommandSpecForSpawn(
-      this.worker.commandSpec ?? commandForAdapter(this.worker.adapter, this.worker.artifactDir),
+      this.worker.commandSpec ??
+        commandForAdapter(this.worker.adapter, this.worker.artifactDir, {
+          workerTrust: this.worker.workerTrust,
+        }),
     );
     const commandLine = formatCommandLine(commandSpec);
     const stdout = createWriteStream(this.worker.stdoutPath, { flags: "a" });
@@ -265,6 +372,69 @@ function resolveNpmCmdShim(command) {
     command: isExistingFile(bundledNode) ? bundledNode : process.execPath,
     args: [targetPath],
   };
+}
+
+function readRestWorkerReadiness(worker) {
+  const pollPath = worker.pollPath ?? path.join(worker.artifactDir, "poll.jsonl");
+  let text;
+  try {
+    text = readFileSync(pollPath, "utf8");
+  } catch (error) {
+    return {
+      worker: worker.name,
+      pollPath,
+      ready: false,
+      parsedEntries: 0,
+      lineCount: 0,
+      parseErrors: [],
+      readError: error.message,
+    };
+  }
+
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
+  const parseErrors = [];
+  let parsedEntries = 0;
+  for (const [index, line] of lines.entries()) {
+    try {
+      JSON.parse(line);
+      parsedEntries += 1;
+    } catch (error) {
+      parseErrors.push({ line: index + 1, error: error.message });
+    }
+  }
+  return {
+    worker: worker.name,
+    pollPath,
+    ready: lines.length >= 1,
+    parsedEntries,
+    lineCount: lines.length,
+    parseErrors,
+  };
+}
+
+function workerBootTimeoutFailure({ roomCode, workerBootMs, readiness }) {
+  const neverReadyWorkers = readiness
+    .filter((worker) => !worker.ready)
+    .map((worker) => worker.worker);
+  return {
+    code: "WORKER_BOOT_TIMEOUT",
+    severity: "high",
+    message: `REST worker boot timeout after ${workerBootMs}ms: ${neverReadyWorkers.join(", ")}`,
+    evidence: {
+      roomCode,
+      workerBootMs,
+      neverReadyWorkers,
+      readiness,
+    },
+    fixHint:
+      "Inspect worker stdout/stderr and poll.jsonl. REST workers must append at least one non-empty poll line before the room starts; parseErrors are diagnostic only.",
+  };
+}
+
+function qaChaosFailureError(failure) {
+  const error = new Error(failure.message);
+  error.qaChaosFailure = failure;
+  return error;
 }
 
 function delay(ms) {

@@ -870,6 +870,44 @@ var GameLogic = {
     return out;
   },
 
+  internalWaitOpportunity: function (state, actorId, projection) {
+    var playerId = actorId === "__system__" ? null : actorId;
+    var prompt = null;
+    var waiting = 0;
+    var i;
+    if (
+      !playerId ||
+      !state.players ||
+      state.players.indexOf(playerId) === -1 ||
+      (projection && projection.result)
+    )
+      return null;
+    if (state.phase === "passing") {
+      for (i = 0; i < state.players.length; i++) {
+        if ((state.passed[state.players[i]] || []).length < 3) waiting++;
+      }
+      prompt =
+        waiting > 0
+          ? "Waiting for " +
+            waiting +
+            " player" +
+            (waiting === 1 ? "" : "s") +
+            " to pass cards."
+          : "Waiting for passed cards to resolve.";
+    } else if (state.phase === "playing" && state.currentPlayer) {
+      prompt = "Waiting for " + state.currentPlayer + " to play a card.";
+    } else if (state.phase === "roundEnd") {
+      prompt = "Round ended - next hand starts automatically.";
+    }
+    if (!prompt) return null;
+    return {
+      kind: "wait",
+      id: "wait",
+      prompt: prompt,
+      decision: { type: "none" },
+    };
+  },
+
   internalOpportunitiesFromTurn: function (state, actorId) {
     var playerId = actorId === "__system__" ? null : actorId;
     /** @type {Object} */
@@ -886,6 +924,7 @@ var GameLogic = {
     var opportunity;
     /** @type {Object} */
     var deadline;
+    var waitOpportunity;
     var chatChannels = projection.chatChannel
       ? [projection.chatChannel]
       : this.internalChatChannelsFor(state, actorId, projection);
@@ -897,8 +936,16 @@ var GameLogic = {
 
     if (actions.length === 0 && defaultAction)
       actions = [this.internalNormalizeOption(defaultAction)];
-    if (actions.length === 0)
-      return this.internalChatOpportunities(chatChannels);
+    if (actions.length === 0) {
+      waitOpportunity = this.internalWaitOpportunity(
+        state,
+        actorId,
+        projection,
+      );
+      return (waitOpportunity ? [waitOpportunity] : []).concat(
+        this.internalChatOpportunities(chatChannels),
+      );
+    }
     if (
       defaultAction &&
       !actions.some(function (option) {

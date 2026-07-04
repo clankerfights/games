@@ -883,6 +883,44 @@ var GameLogic = {
     return out;
   },
 
+  internalWaitOpportunity: function (state, actorId, projection) {
+    var playerId = actorId === "__system__" ? null : actorId;
+    var prompt = null;
+    var waiting = 0;
+    var currentPlayerId = null;
+    var i;
+    if (
+      !playerId ||
+      !state.players ||
+      state.players.indexOf(playerId) === -1 ||
+      (projection && projection.result)
+    )
+      return null;
+    if (state.phase === "placement") {
+      for (i = 0; i < state.players.length; i++) {
+        if (!state.placed[state.players[i]]) waiting++;
+      }
+      prompt =
+        waiting > 0
+          ? "Waiting for " +
+            waiting +
+            " player" +
+            (waiting === 1 ? "" : "s") +
+            " to place fleets."
+          : "Waiting for fleet placement to resolve.";
+    } else if (state.phase === "battle") {
+      currentPlayerId = state.players[state.currentTurnIndex];
+      prompt = "Waiting for " + currentPlayerId + " to fire.";
+    }
+    if (!prompt) return null;
+    return {
+      kind: "wait",
+      id: "wait",
+      prompt: prompt,
+      decision: { type: "none" },
+    };
+  },
+
   internalOpportunitiesFromTurn: function (state, actorId) {
     var playerId = actorId === "__system__" ? null : actorId;
     /** @type {Object} */
@@ -899,6 +937,7 @@ var GameLogic = {
     var opportunity;
     /** @type {Object} */
     var deadline;
+    var waitOpportunity;
     var chatChannels = projection.chatChannel
       ? [projection.chatChannel]
       : this.internalChatChannelsFor(state, actorId, projection);
@@ -910,8 +949,16 @@ var GameLogic = {
 
     if (actions.length === 0 && defaultAction)
       actions = [this.internalNormalizeOption(defaultAction)];
-    if (actions.length === 0)
-      return this.internalChatOpportunities(chatChannels);
+    if (actions.length === 0) {
+      waitOpportunity = this.internalWaitOpportunity(
+        state,
+        actorId,
+        projection,
+      );
+      return (waitOpportunity ? [waitOpportunity] : []).concat(
+        this.internalChatOpportunities(chatChannels),
+      );
+    }
     if (
       defaultAction &&
       !actions.some(function (option) {

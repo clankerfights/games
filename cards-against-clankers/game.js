@@ -695,7 +695,9 @@ function cloneHands(hands) {
 function cloneSubmissions(submissions) {
   var out = {};
   var k;
+  if (!submissions) return out;
   for (k in submissions) {
+    if (!submissions[k] || !Array.isArray(submissions[k].cardIds)) continue;
     out[k] = {
       cardIds: submissions[k].cardIds.slice(),
     };
@@ -718,9 +720,10 @@ function copyState(state) {
     currentPrompt: state.currentPrompt,
     responseDeck: state.responseDeck,
     responseDiscard: state.responseDiscard,
+    responseRecycleOrder: state.responseRecycleOrder,
     hands: state.hands,
-    roundHands: state.roundHands,
     submissions: state.submissions,
+    partialSubmissions: state.partialSubmissions || {},
     submitted: state.submitted,
     options: state.options,
     winnerId: state.winnerId,
@@ -745,17 +748,6 @@ function dealInitialHands(playerIds, deck, handSize) {
     }
   }
   return { hands: hands, deck: nextDeck };
-}
-
-function buildRoundHands(playerIds, random, roundCount, handSize) {
-  var roundHands = [];
-  var i, deck, dealt;
-  for (i = 0; i < roundCount; i++) {
-    deck = random.shuffle(makeIndexArray(WHITE_CARDS.length));
-    dealt = dealInitialHands(playerIds, deck, handSize);
-    roundHands.push(dealt.hands);
-  }
-  return roundHands;
 }
 
 function getPrompt(state) {
@@ -783,6 +775,14 @@ function hasCard(hand, cardId) {
   return hand.indexOf(cardId) !== -1;
 }
 
+function hasSelectedCard(cardIds, cardId) {
+  var i;
+  for (i = 0; i < cardIds.length; i++) {
+    if (cardIds[i] === cardId) return true;
+  }
+  return false;
+}
+
 function validCardSelection(hand, cardIds, pick) {
   var seen = {};
   var i, id;
@@ -797,7 +797,71 @@ function validCardSelection(hand, cardIds, pick) {
   return true;
 }
 
-function replenishHand(state, hand, selectedIds) {
+function partialCardIds(state, playerId) {
+  var partial =
+    state.partialSubmissions && state.partialSubmissions[playerId]
+      ? state.partialSubmissions[playerId]
+      : null;
+  if (!partial || !Array.isArray(partial.cardIds)) return [];
+  return partial.cardIds.slice();
+}
+
+function submitCardId(action) {
+  if (typeof action.cardId === "number") return action.cardId;
+  if (
+    Array.isArray(action.cardIds) &&
+    action.cardIds.length === 1 &&
+    typeof action.cardIds[0] === "number"
+  )
+    return action.cardIds[0];
+  return null;
+}
+
+function validNextCardPick(hand, selectedIds, cardId, pick) {
+  if (typeof cardId !== "number") return false;
+  if (selectedIds.length >= pick) return false;
+  if (hasSelectedCard(selectedIds, cardId)) return false;
+  return hasCard(hand, cardId);
+}
+
+function heldCardMap(hands, overridePlayerId, overrideHand) {
+  var held = {};
+  var pid, hand, i;
+  for (pid in hands) {
+    hand = pid === overridePlayerId ? overrideHand : hands[pid];
+    if (!Array.isArray(hand)) continue;
+    for (i = 0; i < hand.length; i++) held[hand[i]] = true;
+  }
+  return held;
+}
+
+function removeHeldCards(cards, held) {
+  var out = [];
+  var i, id;
+  for (i = 0; i < cards.length; i++) {
+    id = cards[i];
+    if (!held[id]) out.push(id);
+  }
+  return out;
+}
+
+function orderCardsByRecycleSeed(cards, recycleOrder) {
+  var available = {};
+  var out = [];
+  var i, id;
+  for (i = 0; i < cards.length; i++) available[cards[i]] = true;
+  for (i = 0; i < recycleOrder.length; i++) {
+    id = recycleOrder[i];
+    if (available[id]) out.push(id);
+  }
+  return out;
+}
+
+function recycleResponseDiscard(discard, recycleOrder, held) {
+  return orderCardsByRecycleSeed(removeHeldCards(discard, held), recycleOrder);
+}
+
+function replenishHand(state, playerId, hand, selectedIds) {
   var selected = {};
   var i;
   for (i = 0; i < selectedIds.length; i++) selected[selectedIds[i]] = true;
@@ -807,22 +871,39 @@ function replenishHand(state, hand, selectedIds) {
     if (!selected[hand[i]]) newHand.push(hand[i]);
   }
 
-  var deck = state.responseDeck.slice();
-  var discard = state.responseDiscard.slice();
+  var held = heldCardMap(state.hands, playerId, newHand);
+  var recycleOrder = state.responseRecycleOrder || makeIndexArray(WHITE_CARDS.length);
+  var deck = removeHeldCards(state.responseDeck || [], held);
+  var discard = removeHeldCards(state.responseDiscard || [], held);
   var drawCount = selectedIds.length;
+  var cardId;
   while (drawCount > 0) {
     if (deck.length === 0 && discard.length > 0) {
-      deck = discard;
+      deck = recycleResponseDiscard(discard, recycleOrder, held);
       discard = [];
     }
     if (deck.length === 0) break;
-    newHand.push(deck[0]);
+    cardId = deck[0];
     deck = deck.slice(1);
+    if (held[cardId]) continue;
+    newHand.push(cardId);
+    held[cardId] = true;
     drawCount--;
   }
 
-  discard = discard.concat(selectedIds);
   return { hand: newHand, deck: deck, discard: discard };
+}
+
+function submittedCardIds(submissions) {
+  var out = [];
+  var pid, cardIds, i;
+  for (pid in submissions) {
+    if (!submissions[pid] || !Array.isArray(submissions[pid].cardIds))
+      continue;
+    cardIds = submissions[pid].cardIds;
+    for (i = 0; i < cardIds.length; i++) out.push(cardIds[i]);
+  }
+  return out;
 }
 
 function allSubmittersSubmitted(state) {
@@ -867,51 +948,25 @@ function optionLabel(decision, label) {
   return { decision: decision, label: label };
 }
 
-function submitLabel(prompt, cardIds) {
-  var parts = ["Black card: " + prompt.text];
-  var i;
-  for (i = 0; i < cardIds.length; i++) {
-    parts.push(
-      "White card" +
-        (cardIds.length > 1 ? " " + (i + 1) : "") +
-        ": " +
-        WHITE_CARDS[cardIds[i]],
-    );
-  }
-  return parts.join(" | ");
+function submitLabel(cardId) {
+  return WHITE_CARDS[cardId];
 }
 
-function judgeLabel(prompt, option) {
-  return (
-    "Black card: " +
-    prompt.text +
-    " | Submitted answer: " +
-    option.texts.join(" / ")
-  );
+function judgeLabel(option) {
+  return option.texts.join(" / ");
 }
 
-function buildSubmitActions(hand, prompt) {
+function buildSubmitActions(hand, prompt, selectedIds) {
   var actions = [];
   var pick = prompt.pick;
-  var i, j, decision;
-  if (pick === 1) {
-    for (i = 0; i < hand.length; i++) {
-      decision = { type: "submit", cardIds: [hand[i]] };
-      actions.push(
-        optionLabel(decision, submitLabel(prompt, decision.cardIds)),
-      );
-    }
-  } else {
-    for (i = 0; i < hand.length; i++) {
-      for (j = 0; j < hand.length; j++) {
-        if (i !== j) {
-          decision = { type: "submit", cardIds: [hand[i], hand[j]] };
-          actions.push(
-            optionLabel(decision, submitLabel(prompt, decision.cardIds)),
-          );
-        }
-      }
-    }
+  var selected = selectedIds || [];
+  var i, id, decision;
+  if (selected.length >= pick) return actions;
+  for (i = 0; i < hand.length; i++) {
+    id = hand[i];
+    if (hasSelectedCard(selected, id)) continue;
+    decision = { type: "submit", cardId: id };
+    actions.push(optionLabel(decision, submitLabel(id)));
   }
   return actions;
 }
@@ -919,17 +974,22 @@ function buildSubmitActions(hand, prompt) {
 function firstSubmitAction(state, playerId) {
   var hand = state.hands[playerId] || [];
   var pick = getPrompt(state).pick;
-  if (hand.length < pick) return null;
-  return { type: "submit", cardIds: hand.slice(0, pick) };
+  var selected = partialCardIds(state, playerId);
+  var i;
+  if (selected.length >= pick) return null;
+  for (i = 0; i < hand.length; i++) {
+    if (!hasSelectedCard(selected, hand[i]))
+      return { type: "submit", cardId: hand[i] };
+  }
+  return null;
 }
 
 function buildJudgeActions(state) {
   var actions = [];
-  var prompt = getPrompt(state);
   var i, decision;
   for (i = 0; i < state.options.length; i++) {
     decision = { type: "judge_pick", optionId: state.options[i].id };
-    actions.push(optionLabel(decision, judgeLabel(prompt, state.options[i])));
+    actions.push(optionLabel(decision, judgeLabel(state.options[i])));
   }
   return actions;
 }
@@ -962,6 +1022,8 @@ function shouldEnd(state) {
 
 function startNextRound(state) {
   var next = copyState(state);
+  var held = heldCardMap(state.hands, null, null);
+  var submittedIds = submittedCardIds(state.submissions || {});
   next.phase = "submit";
   next.round = state.round + 1;
   next.judgeIndex = (state.judgeIndex + 1) % state.players.length;
@@ -969,10 +1031,14 @@ function startNextRound(state) {
   next.currentPrompt =
     state.promptDeck[state.promptCursor % state.promptDeck.length];
   next.promptCursor = state.promptCursor + 1;
-  if (state.roundHands && state.roundHands[next.round - 1]) {
-    next.hands = cloneHands(state.roundHands[next.round - 1]);
-  }
+  next.responseDeck = removeHeldCards(state.responseDeck || [], held);
+  next.responseDiscard = removeHeldCards(
+    (state.responseDiscard || []).concat(submittedIds),
+    held,
+  );
+  next.hands = cloneHands(state.hands);
   next.submissions = {};
+  next.partialSubmissions = {};
   next.submitted = {};
   next.options = [];
   next.winnerId = null;
@@ -1001,10 +1067,51 @@ function submissionPreview(state, playerId) {
   return { cardIds: sub.cardIds.slice(), texts: selectedTexts(sub.cardIds) };
 }
 
+function partialSubmissionPreview(state, playerId) {
+  var cardIds = partialCardIds(state, playerId);
+  if (cardIds.length === 0) return null;
+  return { cardIds: cardIds, texts: selectedTexts(cardIds) };
+}
+
+function submitProgress(state, playerId) {
+  var prompt = getPrompt(state);
+  var cardIds = partialCardIds(state, playerId);
+  return {
+    pick: prompt.pick,
+    selectedCount: cardIds.length,
+    nextBlank: Math.min(cardIds.length + 1, prompt.pick),
+  };
+}
+
+function submitOpportunityPrompt(prompt, selectedIds) {
+  var selected = selectedIds || [];
+  var nextBlank = selected.length + 1;
+  var lines = [];
+  lines.push("Black card: " + prompt.text);
+  lines.push(
+    "Choose the white card for blank " +
+      nextBlank +
+      " of " +
+      prompt.pick +
+      ".",
+  );
+  if (selected.length > 0)
+    lines.push("Already chosen: " + selectedTexts(selected).join(" / "));
+  return lines.join("\n");
+}
+
+function judgeOpportunityPrompt(prompt) {
+  return (
+    "Black card: " +
+    prompt.text +
+    "\nChoose the winning anonymous answer."
+  );
+}
+
 function buildAgentView(state, playerId) {
   var prompt = getPrompt(state);
   var lines = [];
-  var i, pid;
+  var i, pid, partial;
   lines.push("Phase: " + state.phase);
   lines.push("Round: " + state.round + "/" + state.maxRounds);
   lines.push("Judge: " + state.judgeId);
@@ -1026,6 +1133,17 @@ function buildAgentView(state, playerId) {
       pid = state.players[i];
       if (pid !== state.judgeId)
         lines.push("- " + pid + ": " + (state.submitted[pid] ? "yes" : "no"));
+    }
+    if (playerId && playerId !== state.judgeId && !state.submitted[playerId]) {
+      partial = partialCardIds(state, playerId);
+      lines.push(
+        "Your next pick: blank " +
+          Math.min(partial.length + 1, prompt.pick) +
+          " of " +
+          prompt.pick,
+      );
+      if (partial.length > 0)
+        lines.push("Your partial answer: " + selectedTexts(partial).join(" / "));
     }
   }
   if (playerId && state.hands[playerId]) {
@@ -1071,7 +1189,7 @@ var GameLogic = {
     var promptDeck = ctx.random.shuffle(makeIndexArray(BLACK_CARDS.length));
     var responseDeck = ctx.random.shuffle(makeIndexArray(WHITE_CARDS.length));
     var dealt = dealInitialHands(playerIds, responseDeck, 8);
-    var roundHands = buildRoundHands(playerIds, ctx.random, maxRounds, 8);
+    var responseRecycleOrder = ctx.random.shuffle(makeIndexArray(WHITE_CARDS.length));
     var anonymousOrders = [];
     for (i = 0; i < maxRounds + 2; i++)
       anonymousOrders.push(ctx.random.shuffle(playerIds));
@@ -1090,9 +1208,10 @@ var GameLogic = {
       currentPrompt: promptDeck[0],
       responseDeck: dealt.deck,
       responseDiscard: [],
-      hands: cloneHands(roundHands[0]),
-      roundHands: roundHands,
+      responseRecycleOrder: responseRecycleOrder,
+      hands: cloneHands(dealt.hands),
       submissions: {},
+      partialSubmissions: {},
       submitted: {},
       options: [],
       winnerId: null,
@@ -1134,21 +1253,38 @@ var GameLogic = {
       if (state.submitted[playerId]) return state;
       var prompt = getPrompt(state);
       var hand = state.hands[playerId] || [];
-      if (!validCardSelection(hand, action.cardIds, prompt.pick)) return state;
+      var selectedIds = partialCardIds(state, playerId);
+      var cardId = submitCardId(action);
+      if (!validNextCardPick(hand, selectedIds, cardId, prompt.pick))
+        return state;
 
-      var draw = replenishHand(state, hand, action.cardIds);
+      var chosenIds = selectedIds.concat([cardId]);
+      var nextPartials = cloneSubmissions(state.partialSubmissions);
+      if (chosenIds.length < prompt.pick) {
+        var partialState = copyState(state);
+        nextPartials[playerId] = { cardIds: chosenIds };
+        partialState.partialSubmissions = nextPartials;
+        partialState.actionCount = state.actionCount + 1;
+        return partialState;
+      }
+
+      if (!validCardSelection(hand, chosenIds, prompt.pick)) return state;
+
+      var draw = replenishHand(state, playerId, hand, chosenIds);
       var nextHands = cloneHands(state.hands);
       var nextSubmissions = cloneSubmissions(state.submissions);
       var nextSubmitted = cloneMap(state.submitted);
       nextHands[playerId] = draw.hand;
-      nextSubmissions[playerId] = { cardIds: action.cardIds.slice() };
+      nextSubmissions[playerId] = { cardIds: chosenIds.slice() };
       nextSubmitted[playerId] = true;
+      delete nextPartials[playerId];
 
       var submittedState = copyState(state);
       submittedState.hands = nextHands;
       submittedState.responseDeck = draw.deck;
       submittedState.responseDiscard = draw.discard;
       submittedState.submissions = nextSubmissions;
+      submittedState.partialSubmissions = nextPartials;
       submittedState.submitted = nextSubmitted;
       submittedState.actionCount = state.actionCount + 1;
 
@@ -1208,11 +1344,20 @@ var GameLogic = {
       winningOptionId: revealAuthors ? state.winningOptionId : null,
       myHand: [],
       mySubmission: null,
+      myPartialSubmission: null,
+      submitProgress: null,
     };
 
     if (isPlayer) {
       view.myHand = cardObjects(state.hands[playerId] || []);
       view.mySubmission = submissionPreview(state, playerId);
+      view.myPartialSubmission = partialSubmissionPreview(state, playerId);
+      if (
+        state.phase === "submit" &&
+        playerId !== state.judgeId &&
+        !state.submitted[playerId]
+      )
+        view.submitProgress = submitProgress(state, playerId);
     } else if (playerId === null) {
       view.hands = state.hands;
       view.submissions = state.submissions;
@@ -1226,6 +1371,7 @@ var GameLogic = {
     var defaultAction = null;
     var timeoutMs = null;
     var currentPlayerId = null;
+    var opportunityPrompt = "Choose a legal game action.";
 
     if (state.phase === "submit") {
       timeoutMs = TURN_TIMEOUT_MS;
@@ -1234,12 +1380,19 @@ var GameLogic = {
         playerId !== state.judgeId &&
         !state.submitted[playerId]
       ) {
-        actions = buildSubmitActions(state.hands[playerId] || [], prompt);
+        var partialIds = partialCardIds(state, playerId);
+        actions = buildSubmitActions(
+          state.hands[playerId] || [],
+          prompt,
+          partialIds,
+        );
         defaultAction = firstSubmitAction(state, playerId);
+        opportunityPrompt = submitOpportunityPrompt(prompt, partialIds);
       }
     } else if (state.phase === "judge") {
       timeoutMs = TURN_TIMEOUT_MS;
       currentPlayerId = state.judgeId;
+      opportunityPrompt = judgeOpportunityPrompt(prompt);
       if (isPlayer && playerId === state.judgeId) {
         actions = buildJudgeActions(state);
         if (state.options.length > 0)
@@ -1273,6 +1426,7 @@ var GameLogic = {
       timeoutMs: timeoutMs,
       defaultAction: defaultAction,
       currentPlayerId: currentPlayerId,
+      opportunityPrompt: opportunityPrompt,
       agentView: buildAgentView(state, isPlayer ? playerId : null),
     };
   },
@@ -1383,6 +1537,47 @@ var GameLogic = {
     return out;
   },
 
+  internalWaitOpportunity: function (state, actorId, projection) {
+    var playerId = actorId === "__system__" ? null : actorId;
+    var prompt = null;
+    var waiting = 0;
+    var i;
+    if (
+      !playerId ||
+      !state.players ||
+      state.players.indexOf(playerId) === -1 ||
+      (projection && projection.result)
+    )
+      return null;
+    if (state.phase === "submit") {
+      for (i = 0; i < state.players.length; i++) {
+        if (state.players[i] !== state.judgeId && !state.submitted[state.players[i]])
+          waiting++;
+      }
+      prompt =
+        waiting > 0
+          ? "Waiting for " +
+            waiting +
+            " player" +
+            (waiting === 1 ? "" : "s") +
+            " to submit cards."
+          : "Waiting for card submissions to resolve.";
+    } else if (state.phase === "judge") {
+      prompt = "Waiting for the judge to pick a winner.";
+    } else if (state.phase === "reveal") {
+      prompt = "Round ended - next round starts automatically.";
+    } else if (state.phase === "gameOverDisplay") {
+      prompt = "Game over display - final results post automatically.";
+    }
+    if (!prompt) return null;
+    return {
+      kind: "wait",
+      id: "wait",
+      prompt: prompt,
+      decision: { type: "none" },
+    };
+  },
+
   internalOpportunitiesFromTurn: function (state, actorId) {
     var playerId = actorId === "__system__" ? null : actorId;
     /** @type {Object} */
@@ -1399,6 +1594,7 @@ var GameLogic = {
     var opportunity;
     /** @type {Object} */
     var deadline;
+    var waitOpportunity;
     var chatChannels = projection.chatChannel
       ? [projection.chatChannel]
       : this.internalChatChannelsFor(state, actorId, projection);
@@ -1410,8 +1606,16 @@ var GameLogic = {
 
     if (actions.length === 0 && defaultAction)
       actions = [this.internalNormalizeOption(defaultAction)];
-    if (actions.length === 0)
-      return this.internalChatOpportunities(chatChannels);
+    if (actions.length === 0) {
+      waitOpportunity = this.internalWaitOpportunity(
+        state,
+        actorId,
+        projection,
+      );
+      return (waitOpportunity ? [waitOpportunity] : []).concat(
+        this.internalChatOpportunities(chatChannels),
+      );
+    }
     if (
       defaultAction &&
       !actions.some(function (option) {
@@ -1426,7 +1630,7 @@ var GameLogic = {
     opportunity = {
       id: actorId === "__system__" ? "system" : "turn",
       kind: actorId === "__system__" ? "system" : "turn",
-      prompt: "Choose a legal game action.",
+      prompt: projection.opportunityPrompt || "Choose a legal game action.",
       decision: { type: "choose", options: actions },
     };
     if (
@@ -1434,7 +1638,14 @@ var GameLogic = {
       defaultAction
     ) {
       deadline = {
-        id: opportunity.id + ":" + (state.phase || "turn") + ":" + actorId,
+        id:
+          opportunity.id +
+          ":" +
+          (state.phase || "turn") +
+          ":" +
+          actorId +
+          ":" +
+          state.actionCount,
       };
       if (projection.timeoutMs !== null && projection.timeoutMs !== undefined)
         deadline.timeoutMs = projection.timeoutMs;
@@ -1462,6 +1673,57 @@ var GameLogic = {
     /** @type {Object} */
     var projection = this.internalTurnProjection(state, null) || { view: {} };
     return this.internalOutcomeFromResult(projection.result);
+  },
+
+  invariants: function (state, context) {
+    var checks = [];
+    var held = {};
+    var i, pid, hand, id, first;
+    for (pid in state.hands || {}) {
+      hand = state.hands[pid] || [];
+      var seen = {};
+      for (i = 0; i < hand.length; i++) {
+        id = hand[i];
+        if (seen[id] !== undefined) {
+          checks.push({
+            ok: false,
+            code: "DUPLICATE_HAND_CARD",
+            error:
+              "Player " +
+              pid +
+              " has duplicate white card " +
+              id +
+              " at hand slots " +
+              seen[id] +
+              " and " +
+              i,
+          });
+        }
+        seen[id] = i;
+        if (held[id] === undefined)
+          held[id] = { playerId: pid, slot: i };
+      }
+    }
+    for (i = 0; i < (state.responseDeck || []).length; i++) {
+      id = state.responseDeck[i];
+      first = held[id];
+      if (first !== undefined) {
+        checks.push({
+          ok: false,
+          code: "HELD_CARD_IN_RESPONSE_DECK",
+          error:
+            "White card " +
+            id +
+            " is held by " +
+            first.playerId +
+            " at hand slot " +
+            first.slot +
+            " and also appears in responseDeck at index " +
+            i,
+        });
+      }
+    }
+    return checks;
   },
 
   validate: function () {

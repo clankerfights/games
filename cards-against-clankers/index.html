@@ -370,6 +370,16 @@
     box-shadow: 0 0 0 3px rgba(184,255,44,0.5), 0 18px 36px rgba(0,0,0,0.4);
   }
 
+  .hand-card.locked {
+    cursor: default;
+    opacity: 0.72;
+  }
+
+  .hand-card.locked .select-badge {
+    color: var(--paper);
+    background: #111;
+  }
+
   .select-badge {
     position: absolute;
     right: 8px;
@@ -400,6 +410,21 @@
     font-size: 14px;
     line-height: 1.3;
     font-weight: 750;
+  }
+
+  .partial-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--paper-2);
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .partial-chip {
+    padding: 6px 8px;
+    color: #050505;
+    background: var(--acid);
   }
 
   .primary-btn {
@@ -1171,52 +1196,81 @@
     track.innerHTML = html;
   }
 
-  function updateSelectedCards(root, pick) {
+  function containsId(ids, id) {
+    var i;
+    for (i = 0; i < ids.length; i++) {
+      if (ids[i] === id) return true;
+    }
+    return false;
+  }
+
+  function updateSelectedCards(root, partialIds, pick, nextBlank) {
     var cards = root.querySelectorAll(".hand-card");
-    var i, id, pos, badge;
+    var i, id, pos, badge, lockedIndex;
     for (i = 0; i < cards.length; i++) {
       id = Number(cards[i].getAttribute("data-card-id"));
+      lockedIndex = partialIds.indexOf(id);
       pos = selectedCards.indexOf(id);
       badge = cards[i].querySelector(".select-badge");
-      if (pos >= 0) {
+      if (lockedIndex >= 0) {
         cards[i].classList.add("selected");
+        cards[i].classList.add("locked");
+        if (badge) badge.textContent = String(lockedIndex + 1);
+      } else if (pos >= 0) {
+        cards[i].classList.add("selected");
+        cards[i].classList.remove("locked");
         if (badge) badge.textContent = String(pos + 1);
       } else {
         cards[i].classList.remove("selected");
+        cards[i].classList.remove("locked");
         if (badge) badge.textContent = "";
       }
     }
     var btn = document.getElementById("submit-btn");
     var count = document.getElementById("select-count");
-    if (count) count.textContent = String(selectedCards.length) + "/" + String(pick);
-    if (btn) btn.disabled = selectedCards.length !== pick;
+    if (count) count.textContent = "Blank " + String(nextBlank) + "/" + String(pick);
+    if (btn) btn.disabled = selectedCards.length !== 1;
   }
 
   function renderSubmit(view, legalActions, ctx) {
     var zone = document.getElementById("play-zone");
     var pick = (view.prompt && view.prompt.pick) || 1;
+    var progress = view.submitProgress || { pick: pick, selectedCount: 0, nextBlank: 1 };
+    var partial = view.myPartialSubmission || null;
+    var partialIds = partial && partial.cardIds ? partial.cardIds.slice() : [];
+    var partialTexts = partial && partial.texts ? partial.texts.slice() : [];
+    var nextBlank = progress.nextBlank || partialIds.length + 1;
     var canSubmit = legalActions && legalActions.length > 0 && !view.isJudge;
     var hand = view.myHand || [];
     var html = "";
-    var i, card;
+    var i, card, locked, lockedIndex;
 
     selectedCards = [];
     selectedOption = null;
 
     if (canSubmit) {
-      html += '<div class="panel-title"><span>Your white cards</span><span class="micro" id="select-count">0/' + pick + "</span></div>";
+      html += '<div class="panel-title"><span>Your white cards</span><span class="micro" id="select-count">Blank ' + nextBlank + "/" + pick + "</span></div>";
+      if (partialTexts.length > 0) {
+        html += '<div class="partial-strip">';
+        for (i = 0; i < partialTexts.length; i++) {
+          html += '<span class="partial-chip">Blank ' + (i + 1) + ': ' + escapeHtml(partialTexts[i]) + "</span>";
+        }
+        html += "</div>";
+      }
       html += '<div class="hand-grid" id="hand-grid">';
       for (i = 0; i < hand.length; i++) {
         card = hand[i];
-        html += '<button class="hand-card" data-card-id="' + card.id + '" type="button">';
+        lockedIndex = partialIds.indexOf(card.id);
+        locked = lockedIndex >= 0;
+        html += '<button class="hand-card' + (locked ? " locked selected" : "") + '" data-card-id="' + card.id + '" type="button"' + (locked ? " disabled" : "") + ">";
         html += escapeHtml(card.text);
-        html += '<span class="select-badge"></span>';
+        html += '<span class="select-badge">' + (locked ? String(lockedIndex + 1) : "") + "</span>";
         html += "</button>";
       }
       html += "</div>";
       html += '<div class="action-row">';
-      html += '<div class="locked-copy">Pick the card' + (pick > 1 ? "s in order" : "") + ' that will make the judge question their life.</div>';
-      html += '<button class="primary-btn" id="submit-btn" type="button" disabled>Submit filth</button>';
+      html += '<div class="locked-copy">Choose the card for blank ' + nextBlank + " of " + pick + ".</div>";
+      html += '<button class="primary-btn" id="submit-btn" type="button" disabled>Lock blank ' + nextBlank + "</button>";
       html += "</div>";
       zone.innerHTML = html;
 
@@ -1224,31 +1278,36 @@
       var buttons = grid.querySelectorAll(".hand-card");
       for (i = 0; i < buttons.length; i++) {
         buttons[i].addEventListener("click", function () {
+          if (this.disabled) return;
           var id = Number(this.getAttribute("data-card-id"));
+          if (containsId(partialIds, id)) return;
           var pos = selectedCards.indexOf(id);
           if (pos >= 0) {
             selectedCards.splice(pos, 1);
           } else {
-            if (selectedCards.length >= pick) selectedCards.shift();
+            if (selectedCards.length >= 1) selectedCards.shift();
             selectedCards.push(id);
           }
           if (playgent.sound) playgent.sound("ui.select");
-          updateSelectedCards(zone, pick);
+          updateSelectedCards(zone, partialIds, pick, nextBlank);
         });
       }
 
       document.getElementById("submit-btn").addEventListener("click", function () {
-        if (selectedCards.length === pick) {
+        if (selectedCards.length === 1) {
           if (playgent.sound) playgent.sound("card.place");
-          playgent.submitAction({ type: "submit", cardIds: selectedCards.slice() });
+          playgent.submitAction({ type: "submit", cardId: selectedCards[0] });
           this.disabled = true;
         }
       });
     } else {
       var mine = view.mySubmission && view.mySubmission.texts ? view.mySubmission.texts.join(" / ") : "";
+      var partialMine = partialTexts.length > 0 ? partialTexts.join(" / ") : "";
       html += '<div class="waiting-block">';
       if (view.isJudge) {
         html += "You are judging. Let the clankers embarrass themselves.";
+      } else if (partialMine) {
+        html += "Locked so far: " + escapeHtml(partialMine);
       } else if (mine) {
         html += "Locked in: " + escapeHtml(mine);
       } else {

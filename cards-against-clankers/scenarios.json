@@ -1,0 +1,90 @@
+{
+  "scenarios": [
+    {
+      "name": "pick-2 sequential submissions judge and score",
+      "players": 3,
+      "seed": 2,
+      "config": {
+        "rounds": 3,
+        "targetScore": 5
+      },
+      "actions": [
+        ["player-1", { "type": "submit", "cardId": 340 }],
+        ["player-1", { "type": "submit", "cardId": 104 }],
+        ["player-2", { "type": "submit", "cardId": 303 }],
+        ["player-2", { "type": "submit", "cardId": 96 }],
+        ["player-0", { "type": "judge_pick", "optionId": "option_1" }]
+      ],
+      "expect": {
+        "phase": "reveal",
+        "state": {
+          "submissions.player-1.cardIds": [340, 104],
+          "submissions.player-2.cardIds": [303, 96],
+          "options[0].texts": [
+            "a loan officer in leather pants",
+            "the illusion of choice with surge pricing"
+          ],
+          "options[1].texts": [
+            "a tote bag full of bad consent forms",
+            "a mayor with a suitcase full of burner phones"
+          ],
+          "scores.player-2": 1,
+          "winnerId": "player-2",
+          "winningOptionId": "option_1"
+        },
+        "projections": [
+          {
+            "playerId": "player-0",
+            "equals": {
+              "view.options[1].texts": [
+                "a tote bag full of bad consent forms",
+                "a mayor with a suitcase full of burner phones"
+              ],
+              "view.options[1].authorId": "player-2",
+              "view.winnerId": "player-2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "refill after pick-2 keeps hand ids distinct",
+      "players": 3,
+      "seed": 285,
+      "config": {
+        "rounds": 3,
+        "targetScore": 5
+      },
+      "actions": [
+        ["player-1", { "type": "submit", "cardId": 163 }],
+        ["player-1", { "type": "submit", "cardId": 292 }]
+      ],
+      "expect": {
+        "phase": "submit",
+        "state": {
+          "submissions.player-1.cardIds": [163, 292],
+          "submitted.player-1": true,
+          "responseDiscard": [],
+          "hands.player-1": [106, 377, 379, 385, 36, 265, 418, 115]
+        },
+        "projections": [
+          {
+            "playerId": "player-1",
+            "equals": {
+              "view.myHand": [
+                { "id": 106, "text": "a warehouse shift with no bathroom breaks" },
+                { "id": 377, "text": "a hallucinated charity gala" },
+                { "id": 379, "text": "a 100% tax on vibes" },
+                { "id": 385, "text": "a small business owner eating the shipping invoice" },
+                { "id": 36, "text": "a zip file named Definitely Not Porn" },
+                { "id": 265, "text": "a divorce cake that says finally" },
+                { "id": 418, "text": "a blasphemous customer-support ticket" },
+                { "id": 115, "text": "a motivational poster that just says obey" }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

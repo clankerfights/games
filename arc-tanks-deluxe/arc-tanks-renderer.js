@@ -274,6 +274,7 @@
         self.ready = true;
         window.__arcTanksRenderer = self;
         if (self.pending) self.render(self.pending);
+        return undefined;
       });
   };
 

@@ -1029,9 +1029,10 @@ var GameLogic = (function () {
 
   function handleTerrainMoverWeapon(ctx) {
     var change = Terrain.subtractDisk(ctx.result.terrainGrid, ctx.x, ctx.y, ctx.r, 2.3);
+    var mowChange;
     trackTerrain(ctx, change);
-    change = Terrain.mowBand(ctx.result.terrainGrid, ctx.x, ctx.r * 1.15, ctx.r * 0.45);
-    trackTerrain(ctx, change);
+    mowChange = Terrain.mowBand(ctx.result.terrainGrid, ctx.x, ctx.r * 1.15, ctx.r * 0.45);
+    trackTerrain(ctx, mowChange);
     weaponImpact(ctx, { x: round1(ctx.x), y: round1(ctx.y), radius: ctx.r * 1.12, type: "huge_crater", material: "air", points: weaponImpactPoints(ctx.weaponDef) });
   }
 
@@ -1124,19 +1125,20 @@ var GameLogic = (function () {
     var endY = ctx.y + ctx.r * (isFlying ? 3.9 : isDigger ? 5.2 : 2.1);
     var width = ctx.weaponDef.width || ctx.r * (isFlying ? 0.58 : isDigger ? 0.82 : 0.68);
     var change = Terrain.subtractLine(ctx.result.terrainGrid, ctx.x, ctx.y, endX, endY, width);
+    var pocketChange, diggerChange;
     trackTerrain(ctx, change);
     if (isFlying) {
       change = Terrain.subtractLine(ctx.result.terrainGrid, ctx.x - ctx.dir * ctx.r * 1.35, ctx.y - ctx.r * 0.22, endX, endY + ctx.r * 0.62, width * 0.72);
       trackTerrain(ctx, change);
-      change = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY + ctx.r * 0.28, ctx.r * 1.3, 2);
-      trackTerrain(ctx, change);
+      pocketChange = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY + ctx.r * 0.28, ctx.r * 1.3, 2);
+      trackTerrain(ctx, pocketChange);
       if (target && (tankNearImpact(target, ctx.x, ctx.y, ctx.r * 4.1) || tankNearImpact(target, endX, endY, ctx.r * 3.1))) {
         target.pitTurns = Math.max(target.pitTurns || 0, 2);
         target.pitRadius = Math.max(target.pitRadius || 0, ctx.r * 4.4);
       }
     } else if (isDigger) {
-      change = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY, ctx.r * 1.08, 2);
-      trackTerrain(ctx, change);
+      diggerChange = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY, ctx.r * 1.08, 2);
+      trackTerrain(ctx, diggerChange);
       if (target && tankNearImpact(target, ctx.x, ctx.y, ctx.r * 4.2)) {
         target.pitTurns = Math.max(target.pitTurns || 0, 2);
         target.pitRadius = Math.max(target.pitRadius || 0, ctx.r * 4.2);
@@ -1197,9 +1199,10 @@ var GameLogic = (function () {
     var endX = ctx.sim.impact.x;
     var endY = ctx.sim.impact.y;
     var change = Terrain.subtractLine(ctx.result.terrainGrid, ctx.sim.start.x, ctx.sim.start.y, endX, endY, ctx.r * 0.28);
+    var craterChange;
     trackTerrain(ctx, change);
-    change = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY, ctx.r, 1.8);
-    trackTerrain(ctx, change);
+    craterChange = Terrain.subtractDisk(ctx.result.terrainGrid, endX, endY, ctx.r, 1.8);
+    trackTerrain(ctx, craterChange);
     weaponImpact(ctx, { x: round1(endX), y: round1(endY), radius: ctx.r, type: "bunker_buster", material: "air", points: weaponImpactPoints(ctx.weaponDef) });
   }
 
@@ -1421,16 +1424,16 @@ var GameLogic = (function () {
 
   function handleMowerWeapon(ctx) {
     var change = Terrain.mowBand(ctx.result.terrainGrid, ctx.x, ctx.r * 2.25, ctx.r * 1.15);
-    var key, tank, center;
+    var key, tank, center, lineChange, tankChange;
     trackTerrain(ctx, change);
-    change = Terrain.subtractLine(ctx.result.terrainGrid, ctx.x - ctx.r * 1.75, Terrain.topYAt(ctx.result.terrainGrid, ctx.x - ctx.r * 1.75) + ctx.r * 0.12, ctx.x + ctx.r * 1.75, Terrain.topYAt(ctx.result.terrainGrid, ctx.x + ctx.r * 1.75) + ctx.r * 0.12, ctx.r * 0.42);
-    trackTerrain(ctx, change);
+    lineChange = Terrain.subtractLine(ctx.result.terrainGrid, ctx.x - ctx.r * 1.75, Terrain.topYAt(ctx.result.terrainGrid, ctx.x - ctx.r * 1.75) + ctx.r * 0.12, ctx.x + ctx.r * 1.75, Terrain.topYAt(ctx.result.terrainGrid, ctx.x + ctx.r * 1.75) + ctx.r * 0.12, ctx.r * 0.42);
+    trackTerrain(ctx, lineChange);
     for (key in ctx.result.tanks) {
       tank = ctx.result.tanks[key];
       center = tankCenter(tank);
       if (tankNearImpact(tank, ctx.x, ctx.y, ctx.r * 2.25)) {
-        change = Terrain.subtractDisk(ctx.result.terrainGrid, center.x, center.y - 6, ctx.r * 0.86, 2);
-        trackTerrain(ctx, change);
+        tankChange = Terrain.subtractDisk(ctx.result.terrainGrid, center.x, center.y - 6, ctx.r * 0.86, 2);
+        trackTerrain(ctx, tankChange);
         releaseTank(tank);
       }
     }
@@ -1714,7 +1717,8 @@ var GameLogic = (function () {
   function draftPickCount(state) {
     var i, count;
     count = 0;
-    for (i = 0; state && state.draftPool && i < state.draftPool.length; i++) if (state.draftPool[i].owner) count += 1;
+    if (!state || !state.draftPool) return count;
+    for (i = 0; i < state.draftPool.length; i++) if (state.draftPool[i].owner) count += 1;
     return count;
   }
 

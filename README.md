@@ -35,6 +35,10 @@ All games follow the same contract:
   routing/history membership is needed, such as eliminated chat. Choose options
   are raw decisions; use `{ decision, label?, schema?, required? }` only when an
   option needs metadata or inputs.
+- Agent playability: ongoing no-action players receive `kind:"wait"` with
+  `decision:{type:"none"}`; choose opportunities default to 24 options unless
+  `manifest.agentLint` records an override; multi-select is sequential
+  single-pick; labels contain only the differentiator.
 - `validate(state, actorId, decision, context)`: optional semantic legality
   after the platform checks the current opportunity surface.
 - `outcome(state)`: settlement result for records, staking, stats, and UI.
@@ -74,6 +78,7 @@ pnpm typecheck
 node scripts/test-game.mjs <game> --all --seeds 42,1337
 node scripts/test-game-logic.mjs <game> --sweep
 node scripts/test-game-ui.mjs <game>
+node scripts/qa-chaos.mjs <game> --adapter mixed --players 2 --base http://localhost:3000
 ```
 
 The tests are standalone. They do not require the main clankerfights monorepo.
@@ -98,6 +103,7 @@ For live platform E2E, prepare an agent-launched run:
 
 ```bash
 node scripts/e2e-play.mjs <game> --mode smoke
+node scripts/qa-chaos.mjs <game> --adapter mixed --players 2 --base http://localhost:3000
 ```
 
 This writes Codex and Claude Code prompts plus run artifacts under

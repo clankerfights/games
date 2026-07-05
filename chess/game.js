@@ -493,6 +493,52 @@ var GameLogic = {
     return decision;
   },
 
+  internalPieceName: function (pieceType) {
+    var names = {
+      K: "King",
+      Q: "Queen",
+      R: "Rook",
+      B: "Bishop",
+      N: "Knight",
+      P: "Pawn",
+    };
+    return names[pieceType] || "Piece";
+  },
+
+  internalIsMoveCapture: function (state, move) {
+    return move.enPassant || state.board[move.to.r][move.to.c] !== null;
+  },
+
+  internalMoveLabel: function (state, move) {
+    var piece = state.board[move.from.r][move.from.c];
+    var opponent, boardAfter, label;
+    if (!piece) {
+      return (
+        this.internalSquareName(move.from) +
+        "->" +
+        this.internalSquareName(move.to)
+      );
+    }
+
+    if (move.castle === "K" || move.castle === "Q") {
+      label = move.castle === "K" ? "O-O" : "O-O-O";
+    } else {
+      label =
+        this.internalPieceName(piece.type) +
+        " " +
+        this.internalSquareName(move.from) +
+        (this.internalIsMoveCapture(state, move) ? "x" : "->") +
+        this.internalSquareName(move.to);
+      if (move.promotion) label += "=" + move.promotion;
+      if (move.enPassant) label += " e.p.";
+    }
+
+    opponent = piece.color === "w" ? "b" : "w";
+    boardAfter = this.internalApplyMove(state.board, move);
+    if (this.internalIsInCheck(boardAfter, opponent)) label += "+";
+    return label;
+  },
+
   internalSquareName: function (square) {
     return "abcdefgh".charAt(square.c) + (8 - square.r);
   },
@@ -850,13 +896,23 @@ var GameLogic = {
       return this.internalChatOpportunities(chatChannels);
 
     var color = state.currentTurn === 0 ? "w" : "b";
-    var decisions = this.internalLegalDecisions(state, color);
+    var legal = this.internalLegalMoves(
+      state.board,
+      color,
+      state.enPassantTarget,
+      state.castling,
+    );
+    var decisions = [];
     var options = [];
     var i;
-    if (decisions.length === 0)
+    if (legal.length === 0)
       return this.internalChatOpportunities(chatChannels);
-    for (i = 0; i < decisions.length; i++) {
-      options.push(decisions[i]);
+    for (i = 0; i < legal.length; i++) {
+      decisions.push(this.internalMoveToDecision(legal[i]));
+      options.push({
+        decision: decisions[i],
+        label: this.internalMoveLabel(state, legal[i]),
+      });
     }
 
     /** @type {Object} */

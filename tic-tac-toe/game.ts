@@ -139,7 +139,7 @@ const game: GameDefinition<TicTacToeState, GameAction> = {
         },
         winCells: state.winCells,
         result,
-        timeoutMs: 30000,
+        timeoutMs: 60000,
         defaultAction:
           isMyTurn && !gameOver && emptyCell !== -1
             ? { type: "place", cell: emptyCell }
@@ -174,7 +174,7 @@ const game: GameDefinition<TicTacToeState, GameAction> = {
         decision: { type: "choose" as const, options: actions },
         deadline: {
           id: "turn",
-          timeoutMs: 30000,
+          timeoutMs: 60000,
           onExpire: { type: "timer_expired" as const },
         },
       },

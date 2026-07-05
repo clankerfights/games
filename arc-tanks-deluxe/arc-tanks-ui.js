@@ -11,7 +11,8 @@
   function collectDecisions(actions, out) {
     var i, d;
     out = out || [];
-    for (i = 0; actions && i < actions.length; i++) {
+    if (!actions) return out;
+    for (i = 0; i < actions.length; i++) {
       d = decisionOf(actions[i]);
       if (!d) continue;
       if (d.type === "choose" && d.options) collectDecisions(d.options, out);
@@ -162,6 +163,16 @@
     setTelemetry(stateBundle.view, "draft-submitted");
   }
 
+  function randomDraftAction(actions) {
+    var i;
+    for (i = 0; i < actions.length; i++) if (actions[i].type === "draft_random_all") return actions[i];
+    return actions.length ? actions[0] : null;
+  }
+
+  function submitRandomDraftAction() {
+    submitDraftAction(randomDraftAction(draftActions(stateBundle.legalActions)));
+  }
+
   function renderLoadoutList(node, view, key) {
     var ids = view && view.loadouts && view.loadouts[key] ? view.loadouts[key] : [];
     var i, line, icon, name;
@@ -192,7 +203,7 @@
     var title = document.getElementById("select-title");
     var random = document.getElementById("select-random");
     var actions = draftActions(legalActions);
-    var i, item, card, strong, span, meta, w, p1, p2, icon, action, activeKey, loadoutSize, picksMade, picksTotal, randomAll;
+    var i, item, card, strong, span, meta, w, p1, p2, icon, action, activeKey, loadoutSize, picksMade, picksTotal, randomChoice;
     if (!view || view.phase !== "draft") {
       panel.hidden = true;
       return;
@@ -239,11 +250,9 @@
     renderLoadoutList(p1, view, "p1");
     renderLoadoutList(p2, view, "p2");
     if (random) {
-      randomAll = null;
-      for (i = 0; i < actions.length; i++) if (actions[i].type === "draft_random_all") randomAll = actions[i];
-      random.textContent = randomAll ? "Random All" : "Random";
-      random.disabled = !actions.length;
-      random.onclick = randomAll ? function() { submitDraftAction(randomAll); } : actions.length ? function() { submitDraftAction(actions[0]); } : null;
+      randomChoice = randomDraftAction(actions);
+      random.textContent = randomChoice && randomChoice.type === "draft_random_all" ? "Random All" : "Random";
+      random.disabled = !randomChoice;
     }
   }
 
@@ -442,6 +451,7 @@
     document.getElementById("power-down").addEventListener("click", function() { step("power-input", -2); });
     document.getElementById("power-up").addEventListener("click", function() { step("power-input", 2); });
     document.getElementById("fire-button").addEventListener("click", submitFire);
+    document.getElementById("select-random").addEventListener("click", submitRandomDraftAction);
     if (window.playgent && window.playgent.onStateChange) {
       window.playgent.onStateChange(function(view, legalActions, context) {
         render(view, legalActions, context);

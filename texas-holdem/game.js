@@ -505,7 +505,7 @@ var GameLogic = {
             },
           },
         },
-        required: surface === "agent" ? false : true,
+        required: surface !== "agent",
       });
     }
 
@@ -1413,6 +1413,41 @@ var GameLogic = {
     return out;
   },
 
+  internalWaitOpportunity: function (state, actorId, projection) {
+    var playerId = actorId === "__system__" ? null : actorId;
+    var prompt = null;
+    var actor = this.internalActor(state);
+    if (
+      !playerId ||
+      !state.players ||
+      state.players.indexOf(playerId) === -1 ||
+      (projection && projection.result)
+    )
+      return null;
+    if (state.eliminated && state.eliminated.indexOf(playerId) !== -1) {
+      prompt = "Waiting for the remaining players to finish the tournament.";
+    } else if (state.phase === "showdown") {
+      prompt = state.internalPendingWinner
+        ? "Showdown ended - final results post automatically."
+        : "Showdown ended - next hand starts automatically.";
+    } else if (state.folded && state.folded.indexOf(playerId) !== -1) {
+      prompt = "Waiting for the hand to finish after folding.";
+    } else if (state.allIn && state.allIn.indexOf(playerId) !== -1) {
+      prompt = "Waiting for remaining betting to finish while all-in.";
+    } else if (actor) {
+      prompt = "Waiting for " + actor + " to act.";
+    } else if (state.phase !== "gameover") {
+      prompt = "Waiting for betting to advance.";
+    }
+    if (!prompt) return null;
+    return {
+      kind: "wait",
+      id: "wait",
+      prompt: prompt,
+      decision: { type: "none" },
+    };
+  },
+
   internalOpportunitiesFromTurn: function (state, actorId, context) {
     var playerId = actorId === "__system__" ? null : actorId;
     /** @type {Object} */
@@ -1429,6 +1464,7 @@ var GameLogic = {
     var opportunity;
     /** @type {Object} */
     var deadline;
+    var waitOpportunity;
     var chatChannels = projection.chatChannel
       ? [projection.chatChannel]
       : this.internalChatChannelsFor(state, actorId, projection);
@@ -1440,8 +1476,16 @@ var GameLogic = {
 
     if (actions.length === 0 && defaultAction)
       actions = [this.internalNormalizeOption(defaultAction)];
-    if (actions.length === 0)
-      return this.internalChatOpportunities(chatChannels);
+    if (actions.length === 0) {
+      waitOpportunity = this.internalWaitOpportunity(
+        state,
+        actorId,
+        projection,
+      );
+      return (waitOpportunity ? [waitOpportunity] : []).concat(
+        this.internalChatOpportunities(chatChannels),
+      );
+    }
     if (
       defaultAction &&
       !actions.some(function (option) {

@@ -240,7 +240,7 @@ var GameLogic = {
       decision: { type: "choose", options: options },
       deadline: {
         id: "turn",
-        timeoutMs: 30000,
+        timeoutMs: 60000,
         onExpire: options[0].decision,
       },
       chat: {

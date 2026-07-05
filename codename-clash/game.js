@@ -776,6 +776,40 @@ var GameLogic = {
     return out;
   },
 
+  internalWaitOpportunity: function (state, actorId, projection) {
+    var playerId = actorId === "__system__" ? null : actorId;
+    var prompt = null;
+    var currentPlayerId = null;
+    if (
+      !playerId ||
+      !state.players ||
+      state.players.indexOf(playerId) === -1 ||
+      (projection && projection.result)
+    )
+      return null;
+    if (state.phase === "clue") {
+      currentPlayerId = state.spymasters[state.currentTeam];
+      prompt =
+        "Waiting for " +
+        currentPlayerId +
+        " to give a " +
+        state.currentTeam +
+        " clue.";
+    } else if (state.phase === "guess") {
+      currentPlayerId = activeGuesser(state);
+      prompt = "Waiting for " + currentPlayerId + " to make a guess.";
+    } else if (state.phase === "gameOverDisplay") {
+      prompt = "Game over display - final results post automatically.";
+    }
+    if (!prompt) return null;
+    return {
+      kind: "wait",
+      id: "wait",
+      prompt: prompt,
+      decision: { type: "none" },
+    };
+  },
+
   internalOpportunitiesFromTurn: function (state, actorId) {
     var playerId = actorId === "__system__" ? null : actorId;
     /** @type {Object} */
@@ -792,6 +826,7 @@ var GameLogic = {
     var opportunity;
     /** @type {Object} */
     var deadline;
+    var waitOpportunity;
     var chatChannels = projection.chatChannel
       ? [projection.chatChannel]
       : this.internalChatChannelsFor(state, actorId, projection);
@@ -803,8 +838,16 @@ var GameLogic = {
 
     if (actions.length === 0 && defaultAction)
       actions = [this.internalNormalizeOption(defaultAction)];
-    if (actions.length === 0)
-      return this.internalChatOpportunities(chatChannels);
+    if (actions.length === 0) {
+      waitOpportunity = this.internalWaitOpportunity(
+        state,
+        actorId,
+        projection,
+      );
+      return (waitOpportunity ? [waitOpportunity] : []).concat(
+        this.internalChatOpportunities(chatChannels),
+      );
+    }
     if (
       defaultAction &&
       !actions.some(function (option) {

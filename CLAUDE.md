@@ -28,6 +28,13 @@ Every `game.js` defines `var GameLogic = {...}` with:
 Choose options are raw decisions. Use `{ decision, label?, schema?, required? }`
 only for option metadata or editable fields.
 
+Agent-playable games follow the poll-surface convention in `scripts/README.md`:
+non-actionable ongoing players get `kind:"wait"`, choose opportunities stay
+within the default 24-option budget unless `manifest.agentLint` explains an
+override, multi-select is sequential single picks, and option labels carry only
+the differentiator. Examples: `cards-against-clankers/game.js:1540`,
+`euchre/game.js:936`, `codename-clash/game.js:779`.
+
 Deadline behavior that changes state belongs in `deadline.onExpire`; `apply()`
 receives the serialized decision, not timer/player/system cause.
 
@@ -52,6 +59,7 @@ From this repo root:
 ```bash
 node scripts/test-game-logic.mjs your-game --sweep
 node scripts/test-game-ui.mjs your-game
+node scripts/qa-chaos.mjs ./your-game --adapter mixed --players N --base http://localhost:3000
 ```
 
 Run `pnpm install` first if Playwright is missing. Before merging, test min,

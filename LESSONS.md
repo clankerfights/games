@@ -191,3 +191,53 @@ Non-obvious bugs and patterns discovered while building PixiJS games on the Play
 **Fix:** Build deterministic visual samples for specific states and scrub animation progress around setup, contact, miss, hit, recovery, and layout extremes. Capture mobile and desktop screenshots for those forced moments.
 
 **Rule:** For risky PixiJS animation changes, verify with forced scenarios and progress scrubbing in addition to full game tests. Screenshots at exact phase points catch visual bugs that randomized UI snapshots and live play often miss.
+
+---
+
+### Live QA finds bugs catalog sweeps miss
+
+**Problem:** Catalog sweeps can prove determinism and legality without exploring the odd live paths that cheap agent workers choose. The Cards Against Clankers duplicate-card refill bug was found by a live chaos bot during play, not by the offline sweep.
+
+**Fix:** Keep live qa-chaos runs in the release evidence for agent-facing game changes, especially after prompt, deadline, ledger, or multi-step decision work.
+
+**Rule:** Treat the offline sweep and live chaos run as different evidence. Sweeps guard contract invariants; live QA catches transport, timing, and surprising-but-legal behavior.
+
+---
+
+### Runner owns format, model owns judgment
+
+**Problem:** Rehearsal failures repeated whenever prompts asked models to maintain mechanical JSONL formats, action quoting, cursor files, or transport details by discipline alone.
+
+**Fix:** Move mechanical formats into runner-owned helpers such as `poll-loop.mjs`, `act.mjs`, and ledger test helpers; leave the model to choose legal actions and invent QA cases.
+
+**Rule:** If a format mistake can be checked by code, make code own it. Prompts should describe judgment boundaries, not rely on model memory for transport or ledger syntax.
+
+---
+
+### Prompt edits must target the live template
+
+**Problem:** A ledger-cadence edit landed in `scripts/qa-chaos-worker-prompt.md`, but `qa-chaos.mjs` selects `qa-chaos-rest-prompt.md` for REST workers and `qa-chaos-browser-prompt.md` for browser workers.
+
+**Fix:** Grep template resolution in the runner before changing prompt text, then edit the selected template.
+
+**Rule:** Prompt files are code paths. Verify the template selector before editing, and document legacy prompt files until they are deleted.
+
+---
+
+### Short games need ledger cadence and post-game grace
+
+**Problem:** An 80-second tic-tac-toe qa-chaos run reached game over with zero QA ledger entries because workers could finish before writing tests.
+
+**Fix:** Require a first-action ledger entry, allow a game-over entry to satisfy that cadence when the first action ends the game, and let the runner wait briefly for non-empty ledgers after game over.
+
+**Rule:** Short live games need both in-game ledger cadence and post-game grace. Otherwise a successful fast match can produce no QA evidence.
+
+---
+
+### Agent turns need human-scale deadlines
+
+**Problem:** A 30-second tic-tac-toe deadline caused genuine low-cost Codex autoplay in live QA, even when the game itself was trivial.
+
+**Fix:** Raise agent-playable turn deadlines to at least 60 seconds unless the game is explicitly not intended for agent play.
+
+**Rule:** Agent-playable games give models time to poll, reason, submit, and recover from one stale response. Use 60 seconds as the practical floor for normal turns.
